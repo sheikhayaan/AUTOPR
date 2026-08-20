@@ -29,3 +29,25 @@ def verify_signature(secret: str, body: bytes, header: str | None) -> bool:
         return False
     expected = compute_signature(secret, body)
     return hmac.compare_digest(expected, header)
+
+
+_BEARER_PREFIX = "Bearer "
+
+
+def verify_bearer_token(expected: str, header: str | None) -> bool:
+    """Return True iff ``header`` carries the expected bearer token.
+
+    ``header`` is the raw ``Authorization`` value (e.g. ``"Bearer <token>"``).
+    Comparison is constant-time for the same timing-leak reason as the webhook
+    signature check. An empty ``expected`` never validates — callers that want a
+    "no token configured" no-op must special-case that *before* calling here, so
+    this function can never be tricked into accepting an empty credential.
+    """
+    if not expected:
+        return False
+    if not header or not header.startswith(_BEARER_PREFIX):
+        return False
+    provided = header[len(_BEARER_PREFIX) :].strip()
+    if not provided:
+        return False
+    return hmac.compare_digest(expected, provided)

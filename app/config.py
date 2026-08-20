@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The shipped placeholder for the webhook secret. If this exact value survives to
+# runtime, no real secret was configured — the model validator below refuses to
+# start unless AUTOPR_ALLOW_INSECURE=1 (local/dev/tests).
+_PLACEHOLDER_WEBHOOK_SECRET = "changeme-generate-a-real-secret"
 
 
 class Settings(BaseSettings):
@@ -21,7 +27,30 @@ class Settings(BaseSettings):
     )
 
     # --- Security ---
-    webhook_secret: str = "changeme-generate-a-real-secret"
+    # GitHub webhook HMAC secret. Refuses to start at the placeholder value unless
+    # allow_insecure is set (see _enforce_secure_secret).
+    webhook_secret: str = _PLACEHOLDER_WEBHOOK_SECRET
+    # Bearer token for the mutating/ops API (approve/reject). Empty => auth is a
+    # no-op (dev convenience) with a loud startup warning; set it in any real
+    # deployment. Compared in constant time (see app.security.verify_bearer_token).
+    api_token: str = ""
+    # When true, the read endpoints (/stats, /jobs, /reviews*) also require the
+    # bearer token. Default false so the read-only dashboard demos without auth,
+    # while the write path (approve/reject) is always protected once a token is set.
+    require_auth_for_reads: bool = False
+    # Comma-separated CORS allowlist. A literal "*" allows any origin (demo). The
+    # API sends no cookies (allow_credentials=False), so this bounds which sites'
+    # JS may call it rather than guarding a credential.
+    cors_origins: str = (
+        "http://localhost:5173,http://localhost:4173,http://localhost:3000,http://127.0.0.1:5173"
+    )
+    # Escape hatch for local/dev/tests: permits the placeholder webhook secret.
+    # MUST be false (unset) in production — that is what makes the secret fail-fast.
+    allow_insecure: bool = False
+    # --- Rate limiting (in-process, per client IP, fixed 60s window) ---
+    rate_limit_enabled: bool = True
+    rate_limit_webhook_per_min: int = 120
+    rate_limit_mutations_per_min: int = 30
 
     # --- Datastores ---
     # Default is SQLite so the app + tests run with zero infra. Compose
@@ -87,6 +116,29 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Parse cors_origins into a list; a literal '*' means allow-all."""
+        origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        return ["*"] if "*" in origins else origins
+
+    @model_validator(mode="after")
+    def _enforce_secure_secret(self) -> Settings:
+        """Fail fast: refuse to start with the placeholder webhook secret.
+
+        A service that boots with a well-known shared secret is not secure — any
+        caller could forge webhook signatures. We turn that latent misconfig into
+        an immediate, loud startup failure. allow_insecure is the deliberate,
+        documented opt-out for local/dev/test runs.
+        """
+        if not self.allow_insecure and self.webhook_secret == _PLACEHOLDER_WEBHOOK_SECRET:
+            raise ValueError(
+                "AUTOPR_WEBHOOK_SECRET is still the placeholder. Generate a real "
+                'secret (python -c "import secrets; print(secrets.token_hex(32))") '
+                "and set it, or set AUTOPR_ALLOW_INSECURE=1 for local/dev/tests."
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

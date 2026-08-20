@@ -28,10 +28,11 @@ from app.db import SessionLocal, engine
 from app.ingest import ingest, parse_event
 from app.models import Base, DecisionStatus, JobStatus, PRJob, ReviewDecision
 from app.queue import JobQueue, make_client
+from app.ratelimit import FixedWindowRateLimiter
 from app.routing import store
 from app.routing.github import get_github_client
 from app.routing.router import execute_decision
-from app.security import verify_signature
+from app.security import verify_bearer_token, verify_signature
 
 log = structlog.get_logger()
 
@@ -62,6 +63,14 @@ async def lifespan(app: FastAPI):
     # Create tables (Phase 1 convenience; real migrations = Alembic, noted in
     # the decisions log as deferred).
     Base.metadata.create_all(bind=engine)
+    # Loud warning if the mutating API is left unauthenticated (empty token).
+    # Allowed for local dev; must never be the case in a real deployment.
+    if not settings.api_token:
+        log.warning(
+            "startup.no_api_token",
+            detail="AUTOPR_API_TOKEN is empty; approve/reject are UNAUTHENTICATED. "
+            "Set a token in any real deployment.",
+        )
     app.state.redis = None
     app.state.queue = None
     app.state.github = get_github_client()
@@ -86,17 +95,75 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AutoPR", version="0.1.0", lifespan=lifespan)
 
-# The dashboard (Vite dev server / static build) is a separate origin. In dev it
-# also proxies /api -> here, but we keep permissive CORS so the built SPA can be
-# served from anywhere in a demo. This API takes no cookies/credentials, so
-# allow_origins="*" with credentials off is safe.
+# The dashboard (Vite dev server / static build) is a separate origin. CORS is an
+# allowlist (AUTOPR_CORS_ORIGINS) rather than "*" — a literal "*" is still honored
+# for a wide-open demo, but the default is the local dev origins. The API sends no
+# cookies (allow_credentials=False), so this bounds which sites' JS may call it.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Auth & rate limiting -----------------------------------------------------
+# Bearer-token auth on the mutating/ops API, plus a light per-IP rate limit on the
+# webhook + mutating endpoints. Both reuse the constant-time compare in
+# app.security and the in-process limiter in app.ratelimit.
+_webhook_limiter = FixedWindowRateLimiter(settings.rate_limit_webhook_per_min, 60.0)
+_mutation_limiter = FixedWindowRateLimiter(settings.rate_limit_mutations_per_min, 60.0)
+app.state.webhook_limiter = _webhook_limiter
+app.state.mutation_limiter = _mutation_limiter
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+def require_api_token(authorization: str | None = Header(default=None)) -> None:
+    """Enforce ``Authorization: Bearer <token>`` when a token is configured.
+
+    Empty AUTOPR_API_TOKEN => no-op (dev convenience) with a loud startup warning;
+    when set, a missing or wrong token is a 401.
+    """
+    token = settings.api_token
+    if not token:
+        return
+    if not verify_bearer_token(token, authorization):
+        raise HTTPException(status_code=401, detail="missing or invalid bearer token")
+
+
+def require_api_token_for_reads(authorization: str | None = Header(default=None)) -> None:
+    """Gate read endpoints behind the token only when require_auth_for_reads is set.
+
+    Default off: the read-only dashboard demos without a token, while the write
+    path stays protected whenever a token exists.
+    """
+    if not settings.require_auth_for_reads:
+        return
+    require_api_token(authorization)
+
+
+def _rate_limit(limiter: FixedWindowRateLimiter):
+    """Build a dependency enforcing ``limiter`` per client IP (429 on trip)."""
+
+    def dep(request: Request) -> None:
+        if not settings.rate_limit_enabled:
+            return
+        allowed, retry_after = limiter.allow(_client_ip(request) or "unknown")
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="rate limit exceeded",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    return dep
+
+
+_webhook_rl = _rate_limit(_webhook_limiter)
+_mutation_rl = _rate_limit(_mutation_limiter)
 
 
 @app.get("/healthz")
@@ -104,7 +171,7 @@ def healthz() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/webhook")
+@app.post("/webhook", dependencies=[Depends(_webhook_rl)])
 async def webhook(
     request: Request,
     response: Response,
@@ -176,16 +243,20 @@ def _decision_view(row) -> dict:
     }
 
 
-@app.get("/reviews/pending")
+@app.get("/reviews/pending", dependencies=[Depends(require_api_token_for_reads)])
 def list_pending_reviews(db: Session = Depends(get_db)) -> dict:
     """List routing decisions awaiting human approval, oldest first."""
     rows = store.list_pending(db)
     return {"count": len(rows), "pending": [_decision_view(r) for r in rows]}
 
 
-@app.post("/reviews/{decision_id}/approve")
+@app.post(
+    "/reviews/{decision_id}/approve",
+    dependencies=[Depends(require_api_token), Depends(_mutation_rl)],
+)
 def approve_review(
     decision_id: int,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
     github=Depends(get_github),
@@ -213,16 +284,42 @@ def approve_review(
     result = execute_decision(github, decision, state)
     if result.ok:
         store.mark_executed(db, row, result.url)
-        log.info("reviews.approved_executed", id=row.id, url=result.url)
+        # Audit: an action reached GitHub. Who (IP), what (decision/action/risk),
+        # and the outcome — the trail a reviewer needs for a code-changing event.
+        log.info(
+            "audit.review_approved",
+            decision_id=row.id,
+            action=row.action,
+            risk=row.risk,
+            repo=row.repo,
+            pr_number=row.pr_number,
+            actor_ip=_client_ip(request),
+            outcome="executed",
+            result_url=result.url,
+        )
         return {"status": "executed", "url": result.url, "decision": _decision_view(row)}
     store.mark_failed(db, row, result.detail)
+    log.warning(
+        "audit.review_approve_failed",
+        decision_id=row.id,
+        action=row.action,
+        repo=row.repo,
+        pr_number=row.pr_number,
+        actor_ip=_client_ip(request),
+        outcome="action_failed",
+        detail=result.detail,
+    )
     response.status_code = 502
     return {"status": "action_failed", "detail": result.detail, "decision": _decision_view(row)}
 
 
-@app.post("/reviews/{decision_id}/reject")
+@app.post(
+    "/reviews/{decision_id}/reject",
+    dependencies=[Depends(require_api_token), Depends(_mutation_rl)],
+)
 def reject_review(
     decision_id: int,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict:
@@ -235,6 +332,15 @@ def reject_review(
         response.status_code = 409
         return {"detail": "already executed; cannot reject"}
     store.mark_rejected(db, row)
+    log.info(
+        "audit.review_rejected",
+        decision_id=row.id,
+        action=row.action,
+        repo=row.repo,
+        pr_number=row.pr_number,
+        actor_ip=_client_ip(request),
+        outcome="rejected",
+    )
     return {"status": "rejected", "decision": _decision_view(row)}
 
 
@@ -270,7 +376,7 @@ def _count_by_status(db: Session, column) -> dict[str, int]:
     return out
 
 
-@app.get("/stats")
+@app.get("/stats", dependencies=[Depends(require_api_token_for_reads)])
 def stats(db: Session = Depends(get_db)) -> dict:
     """Aggregate KPIs for the dashboard header — counts by status + config."""
     jobs = _count_by_status(db, PRJob.status)
@@ -300,7 +406,7 @@ def stats(db: Session = Depends(get_db)) -> dict:
     }
 
 
-@app.get("/jobs")
+@app.get("/jobs", dependencies=[Depends(require_api_token_for_reads)])
 def list_jobs(db: Session = Depends(get_db), limit: int = 50) -> dict:
     """Recent PR jobs (newest first) with their exactly-once result summary."""
     limit = max(1, min(limit, 200))
@@ -312,7 +418,7 @@ def list_jobs(db: Session = Depends(get_db), limit: int = 50) -> dict:
     return {"count": len(rows), "jobs": [_job_view(j) for j in rows]}
 
 
-@app.get("/reviews")
+@app.get("/reviews", dependencies=[Depends(require_api_token_for_reads)])
 def list_reviews(
     db: Session = Depends(get_db),
     status: str | None = None,

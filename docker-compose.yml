@@ -59,7 +59,14 @@ services:
       AUTOPR_DATABASE_URL: postgresql+psycopg://autopr:autopr@postgres:5432/autopr
       AUTOPR_REDIS_URL: redis://redis:6379/0
       AUTOPR_QDRANT_URL: http://qdrant:6333
-      AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:-changeme-generate-a-real-secret}
+      # Secrets are interpolated from your .env (never baked into the image).
+      # Both are REQUIRED (`:?`): compose refuses to start rather than expose a
+      # forgeable webhook or an unauthenticated writer. Generate each with:
+      #   python -c "import secrets; print(secrets.token_hex(32))"
+      AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:?set AUTOPR_WEBHOOK_SECRET in .env}
+      AUTOPR_API_TOKEN: ${AUTOPR_API_TOKEN:?set AUTOPR_API_TOKEN in .env}
+      AUTOPR_CORS_ORIGINS: ${AUTOPR_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+      AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
     ports:
       - "8000:8000"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -75,7 +82,10 @@ services:
       AUTOPR_DATABASE_URL: postgresql+psycopg://autopr:autopr@postgres:5432/autopr
       AUTOPR_REDIS_URL: redis://redis:6379/0
       AUTOPR_QDRANT_URL: http://qdrant:6333
-      AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:-changeme-generate-a-real-secret}
+      # Worker imports app.config too, so it needs a valid (non-placeholder)
+      # secret to pass the fail-fast validator. Groq key powers the LLM agents.
+      AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:?set AUTOPR_WEBHOOK_SECRET in .env}
+      AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
     command: ["python", "-m", "app.worker"]
     # Scale workers to prove crash-recovery / concurrent consumption:
     #   docker compose up --scale worker=3

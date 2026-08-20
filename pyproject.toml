@@ -69,6 +69,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011"]
+# conftest sets os.environ before importing app.* — Settings runs a fail-fast
+# secret validator at import time, so those imports must follow the env setup.
+"tests/conftest.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -15,14 +15,36 @@ Fidelity caveats (also in the decisions log):
 
 from __future__ import annotations
 
+# --- Test environment setup --------------------------------------------------
+# AUTOPR_ALLOW_INSECURE MUST be set before any `app.*` import: constructing
+# Settings runs the fail-fast secret validator at import time, and CI has no
+# .env (so the webhook secret would be the shipped placeholder). This opts into
+# the documented local/dev/test escape hatch the validator carves out.
+import os
+
+os.environ.setdefault("AUTOPR_ALLOW_INSECURE", "1")
+
 import fakeredis
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.config import settings as _settings
 from app.models import Base
 from app.queue import JobQueue
+
+# Force a test-safe security posture, overriding whatever a developer's local
+# .env supplies (a real AUTOPR_API_TOKEN there would otherwise make the existing
+# unauthenticated approve/reject tests 401). We mutate the process-wide settings
+# singleton that app.main already imported, so the change is visible to the app:
+# auth is a no-op, reads are open, and the per-IP rate limiter is off — every
+# TestClient request shares the client IP "testclient", so a live limiter would
+# accumulate across unrelated tests and flake. Tests that exercise auth or rate
+# limiting opt back in locally via monkeypatch (see test_auth.py).
+_settings.api_token = ""
+_settings.require_auth_for_reads = False
+_settings.rate_limit_enabled = False
 
 
 @pytest.fixture()
