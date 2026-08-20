@@ -1,0 +1,28 @@
+# Normalize line endings: store LF in the repository for all text files.
+# This prevents CRLF churn between Windows development and Linux CI, and — more
+# importantly — keeps Dockerfiles, shell scripts, and config LF-terminated so
+# they execute correctly inside Linux containers (a CRLF shebang or `RUN` line
+# fails on Linux). `text=auto` lets Git detect text vs binary; `eol=lf` pins the
+# committed and checked-out ending to LF regardless of each machine's core.autocrlf.
+* text=auto eol=lf
+
+# Windows-only helper scripts, if ever added, should keep CRLF:
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets: never normalize.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+*.gz   binary
+*.zip  binary
+
+# Lockfiles are generated; collapse them in diffs and skip them in language stats.
+uv.lock            linguist-generated=true
+frontend/package-lock.json linguist-generated=true

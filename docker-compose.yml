@@ -1,0 +1,86 @@
+# AutoPR — Phase 1 infrastructure.
+# Brings up: FastAPI api, background worker, Postgres, Redis, Qdrant.
+# `docker compose up --build` then POST to http://localhost:8000/webhook.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: autopr
+      POSTGRES_PASSWORD: autopr
+      POSTGRES_DB: autopr
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autopr -d autopr"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    # Qdrant is used from Phase 2; declared now so infra is complete.
+
+  # Phase 3: the fix-verification sandbox is NOT a long-running service. It is a
+  # one-shot image the worker spawns per verification via `docker run` (with
+  # --network none and resource caps; see app/sandbox/runner.py). Build it once:
+  #     docker build -f docker/sandbox.Dockerfile -t autopr-sandbox:latest .
+  # The worker container would need the Docker socket mounted to spawn it
+  # (docker-out-of-docker): add to the worker service when the graph is wired in:
+  #     volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      AUTOPR_DATABASE_URL: postgresql+psycopg://autopr:autopr@postgres:5432/autopr
+      AUTOPR_REDIS_URL: redis://redis:6379/0
+      AUTOPR_QDRANT_URL: http://qdrant:6333
+      AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:-changeme-generate-a-real-secret}
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      AUTOPR_DATABASE_URL: postgresql+psycopg://autopr:autopr@postgres:5432/autopr
+      AUTOPR_REDIS_URL: redis://redis:6379/0
+      AUTOPR_QDRANT_URL: http://qdrant:6333
+      AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:-changeme-generate-a-real-secret}
+    command: ["python", "-m", "app.worker"]
+    # Scale workers to prove crash-recovery / concurrent consumption:
+    #   docker compose up --scale worker=3
+
+volumes:
+  pgdata:
+  redisdata:
+  qdrant_storage:

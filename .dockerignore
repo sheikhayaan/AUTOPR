@@ -1,0 +1,14 @@
+# Keep the Docker build context small and reproducible.
+# Neither image (app or sandbox) needs these; sending .venv especially makes
+# the build crawl.
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.db
+.env
+.mypy_cache/
+.ruff_cache/
+docs/
+tests/

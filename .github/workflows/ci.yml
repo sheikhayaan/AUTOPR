@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Lint, type-check, test (backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen --extra dev
+      - name: Ruff (lint)
+        run: uv run --frozen --extra dev ruff check app tests
+      - name: Ruff (format check)
+        run: uv run --frozen --extra dev ruff format --check app tests
+      - name: Mypy (type-check)
+        run: uv run --frozen --extra dev mypy
+      - name: Pytest + coverage gate
+        run: uv run --frozen --extra dev pytest --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=78
+
+  frontend:
+    name: Build (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install (clean, from lockfile)
+        run: npm ci
+      - name: Build
+        run: npm run build
+
+  images:
+    name: Build container images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build app image
+        run: docker build -t autopr:ci .
+      - name: Build sandbox image
+        run: docker build -f docker/sandbox.Dockerfile -t autopr-sandbox:ci .

@@ -1,0 +1,34 @@
+"""Groq LLM client factory shared across all agents.
+
+Centralizes model config so we tune temperature/model in one place. All agents
+call `get_llm()` rather than instantiating ChatGroq directly — this makes it
+trivial to mock in tests (patch this one function) and to swap models later.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from langchain_groq import ChatGroq
+from pydantic import SecretStr
+
+from app.config import settings
+
+# Llama 3.3 70B via Groq: strong reasoning, fast inference, generous free tier.
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
+
+
+@lru_cache(maxsize=8)
+def get_llm(temperature: float = 0.0, model: str = DEFAULT_MODEL) -> ChatGroq:
+    """Return a cached ChatGroq client.
+
+    temperature=0.0 by default for deterministic, reviewable output. Cached by
+    (temperature, model) so we reuse connections across agent calls within a
+    worker process.
+    """
+    return ChatGroq(
+        model=model,
+        temperature=temperature,
+        api_key=SecretStr(settings.groq_api_key),
+        max_retries=2,
+    )

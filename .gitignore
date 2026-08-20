@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Env / secrets  -- NEVER commit the real .env (holds live API keys)
+.env
+*.local
+
+# Databases (dev SQLite). The schema lives in Alembic migrations, not the file.
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / frontend build output
+frontend/node_modules/
+frontend/dist/
+node_modules/
+*.tsbuildinfo
+
+# uv lockfile is COMMITTED for reproducible builds (intentionally not ignored).
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data / volumes
+pgdata/
+qdrant_storage/
