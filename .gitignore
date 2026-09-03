@@ -20,6 +20,8 @@ htmlcov/
 
 # Databases (dev SQLite). The schema lives in Alembic migrations, not the file.
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 

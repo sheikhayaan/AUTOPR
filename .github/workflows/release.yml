@@ -1,0 +1,96 @@
+# Release: build the app image, publish it to GHCR on a version tag, then
+# (optionally) deploy it to Fly.io. Triggered by pushing a tag like `v1.2.3`.
+#
+# The deploy job is gated on the `FLY_APP_NAME` repository *variable*: if it is
+# unset (a fork, or before you've provisioned Fly), the workflow still builds and
+# publishes the image but skips the deploy cleanly instead of failing red.
+#
+# Required to actually deploy:
+#   - repo variable  FLY_APP_NAME   (your Fly app name)
+#   - repo secret     FLY_API_TOKEN  (`fly tokens create deploy`)
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Least privilege: read the repo, write packages (GHCR). Nothing else.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build & push image to GHCR
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR image names must be lowercase; the owner/repo usually already is,
+      # but lowercasing is cheap insurance against a capitalised org/user.
+      - id: meta
+        name: Compute lowercase image name
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Tag with the git tag (e.g. v1.2.3) and a moving :latest.
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.meta.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Fly.io
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    # Skip cleanly when Fly isn't configured (fork / not yet provisioned).
+    if: ${{ vars.FLY_APP_NAME != '' }}
+    concurrency:
+      group: deploy-${{ vars.FLY_APP_NAME }}
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4        # for fly.toml
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Migrations run automatically as the fly.toml `release_command` before the
+      # new version takes traffic — no separate migrate step here.
+      - name: Deploy the published image
+        run: |
+          flyctl deploy \
+            --app "${{ vars.FLY_APP_NAME }}" \
+            --image "${{ needs.build-and-push.outputs.image }}:${{ github.ref_name }}" \
+            --strategy rolling
+
+      # Post-deploy smoke: the public app must report deep-readiness (DB+Redis).
+      - name: Smoke test /readyz
+        run: |
+          url="https://${{ vars.FLY_APP_NAME }}.fly.dev/readyz"
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)
+            echo "attempt $i: $url -> $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 6
+          done
+          echo "::error::/readyz did not return 200 after deploy"
+          exit 1

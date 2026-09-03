@@ -12,3 +12,9 @@ __pycache__/
 .ruff_cache/
 docs/
 tests/
+# The frontend is a separate artifact (built/served on its own); the app image
+# never needs it, and frontend/node_modules would bloat the context enormously.
+frontend/
+# Local run logs / scratch (e.g. api.local, web.local) and CI config.
+*.local
+.github/

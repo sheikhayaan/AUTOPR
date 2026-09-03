@@ -156,7 +156,14 @@ def get_github_client() -> GitHubClient:
     otherwise the `FakeGitHubClient`, which records intended actions without
     reaching out. Defaulting to the fake makes the system safe by default: you
     have to *opt in* to it touching real repositories.
+
+    Hand-off mode overrides everything: AutoPR must never write to GitHub, so we
+    return the no-op client even when a token is configured. Humans act on their
+    own accounts via the review link the queue surfaces.
     """
+    if settings.handoff_mode:
+        log.info("github.client", mode="handoff_readonly")
+        return FakeGitHubClient()
     if settings.github_token and not settings.github_dry_run:
         log.info("github.client", mode="http", api=settings.github_api_url)
         return HttpGitHubClient(settings.github_token, settings.github_api_url)
@@ -344,5 +351,8 @@ def get_github_reader() -> GitHubReader:
     if settings.github_token:
         log.info("github.reader", mode="http", api=settings.github_api_url)
         return HttpGitHubReader(settings.github_token, settings.github_api_url)
+    if settings.handoff_mode:
+        log.info("github.reader", mode="http_anonymous", api=settings.github_api_url)
+        return HttpGitHubReader("", settings.github_api_url)
     log.info("github.reader", mode="fake")
     return FakeGitHubReader()

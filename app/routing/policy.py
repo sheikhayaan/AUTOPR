@@ -215,7 +215,9 @@ def _route_pr(state: PRState) -> RoutingDecision:
     # Auto-post only at or below the configured risk ceiling. Default ceiling is
     # 'low', so medium/high always wait for a human.
     ceiling = risk_rank(settings.auto_comment_max_risk)
-    auto = risk_rank(risk) <= ceiling
+    # Hand-off mode never auto-posts: AutoPR holds no write credential, so every
+    # review is routed to a human who acts on their own GitHub account.
+    auto = risk_rank(risk) <= ceiling and not settings.handoff_mode
     return RoutingDecision(
         action=Action.COMMENT_REVIEW,
         requires_approval=not auto,

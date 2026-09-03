@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.db import insert_ignore_duplicates
 from app.models import JobStatus, PRJob
+from app.observability import current_correlation_id
 from app.queue import JobQueue
 
 
@@ -247,6 +248,10 @@ def ingest(session: Session, queue: JobQueue, payload: PRPayload) -> IngestResul
             "repo": payload.repo,
             "pr_number": payload.pr_number,
             "commit_sha": payload.commit_sha,
+            # Carry the API request's trace id into the worker. Empty string (not
+            # omitted) so the Redis stream field set is stable; the worker treats
+            # "" as "mint a fresh one".
+            "correlation_id": current_correlation_id() or "",
         }
     )
     job.stream_msg_id = msg_id

@@ -39,6 +39,12 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import SessionLocal, engine, insert_ignore_duplicates
 from app.models import Base, JobResult, JobStatus, PRJob
+from app.observability import (
+    bind_correlation_id,
+    clear_correlation_id,
+    configure_logging,
+    new_correlation_id,
+)
 from app.queue import JobQueue, StreamMessage, make_client
 
 log = structlog.get_logger()
@@ -220,6 +226,8 @@ def reconcile_pending(session: Session, queue: JobQueue) -> int:
                 "repo": job.repo,
                 "pr_number": job.pr_number,
                 "commit_sha": job.commit_sha,
+                # Re-enqueued out of band (no live request), so mint a fresh trace id.
+                "correlation_id": new_correlation_id(),
             }
         )
         job.stream_msg_id = msg_id
@@ -233,6 +241,12 @@ def reconcile_pending(session: Session, queue: JobQueue) -> int:
 
 def _handle_message(queue: JobQueue, msg: StreamMessage, handler) -> None:
     job_id = int(msg.fields["job_id"])
+    # Bind the correlation id the API stamped on this job (see app.ingest), so
+    # every worker log line for this job shares the id the webhook logged under —
+    # one trace across the process boundary. Fall back to a fresh id for a job
+    # enqueued without one (e.g. an older message).
+    correlation_id = msg.fields.get("correlation_id") or new_correlation_id()
+    bind_correlation_id(correlation_id)
     session = SessionLocal()
     try:
         done = process_job(session, job_id, handler=handler)
@@ -254,6 +268,7 @@ def _handle_message(queue: JobQueue, msg: StreamMessage, handler) -> None:
         # Message remains pending; it will be reclaimed after the idle window.
     finally:
         session.close()
+        clear_correlation_id()
 
 
 class Worker:
@@ -297,13 +312,7 @@ class Worker:
 
 
 def main() -> None:
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.JSONRenderer(),
-        ]
-    )
+    configure_logging(json_logs=settings.log_json)
     Base.metadata.create_all(bind=engine)
 
     # Assemble the pipeline collaborators once. The graph is compiled a single

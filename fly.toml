@@ -1,0 +1,71 @@
+# fly.toml — Fly.io deployment manifest for the AutoPR API + worker.
+#
+# The image is built and pushed to GHCR by .github/workflows/release.yml and
+# deployed with `flyctl deploy --image ghcr.io/<owner>/autopr:<tag>`; this file
+# is the runtime shape, not the build.
+#
+# `app` is a placeholder — the real app name is supplied at deploy time
+# (`flyctl deploy --app <name>` / the FLY_APP_NAME repo variable in CI), or set
+# once with `fly launch --no-deploy`.
+#
+# Secrets and connection strings are NEVER in this file. Set them once with:
+#   fly secrets set \
+#     AUTOPR_WEBHOOK_SECRET=... \
+#     AUTOPR_API_TOKEN=... \
+#     AUTOPR_GROQ_API_KEY=... \
+#     AUTOPR_DATABASE_URL=postgresql+psycopg://...   # e.g. `fly postgres attach` target, as AUTOPR_*
+#     AUTOPR_REDIS_URL=redis://...                    # Upstash
+# They are injected into the app, the worker, AND the release_command machine.
+
+app = "autopr"
+primary_region = "iad"
+
+[build]
+  # Image is supplied at deploy time (GHCR). No local build on Fly.
+
+[deploy]
+  # Run migrations exactly once per release, before the new version takes
+  # traffic, in a throwaway machine using the new image. Fly injects the app's
+  # secrets here, so AUTOPR_DATABASE_URL must already be set (see above).
+  release_command = "alembic upgrade head"
+  strategy = "rolling"
+
+[env]
+  # Non-secret runtime config. Safe defaults; the write boundary stays closed.
+  AUTOPR_LOG_JSON = "true"
+  AUTOPR_METRICS_ENABLED = "true"
+  AUTOPR_GITHUB_DRY_RUN = "true"
+  AUTOPR_REQUIRE_AUTH_FOR_READS = "false"
+
+# Two process groups share the one image. Only `app` serves HTTP; `worker`
+# consumes the queue. Scale independently: `fly scale count worker=2`.
+[processes]
+  app = "uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30"
+  worker = "python -m app.worker"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]            # the worker group has no HTTP surface
+
+  # Sized to the stated 1–50-request scale: shed load past ~50 concurrent.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 50
+
+  # Route traffic only when the deep readiness probe passes (DB + Redis up).
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/readyz"
+
+# One small shared VM per machine is right for this scale.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

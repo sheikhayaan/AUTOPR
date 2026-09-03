@@ -14,19 +14,34 @@ The Redis client, queue, GitHub client, and DB session factory live on
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select
+from fastapi.responses import PlainTextResponse
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import SessionLocal, engine
 from app.ingest import ingest, parse_event
 from app.models import Base, DecisionStatus, JobStatus, PRJob, ReviewDecision
+from app.observability import (
+    CORRELATION_ID_HEADER,
+    JOBS_GAUGE,
+    QUEUE_DEPTH,
+    REQUEST_COUNT,
+    REQUEST_LATENCY,
+    REVIEWS_GAUGE,
+    bind_correlation_id,
+    clear_correlation_id,
+    configure_logging,
+    new_correlation_id,
+    render_metrics,
+)
 from app.queue import JobQueue, make_client
 from app.ratelimit import FixedWindowRateLimiter
 from app.routing import store
@@ -34,6 +49,10 @@ from app.routing.github import get_github_client
 from app.routing.router import execute_decision
 from app.security import verify_bearer_token, verify_signature
 
+# Configure structured logging once, at import, before the app serves anything —
+# so even lifespan/startup events are emitted in the configured format (JSON in
+# production). The worker calls the same function from its entrypoint.
+configure_logging(json_logs=settings.log_json)
 log = structlog.get_logger()
 
 
@@ -107,6 +126,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    """Per-request correlation id + Prometheus request metrics.
+
+    * Correlation id: honour an inbound ``X-Request-ID`` (so a proxy/caller can
+      supply its own trace id), else mint one. Bind it into structlog contextvars
+      for the request's lifetime, echo it back in the response header, and clear
+      it after so it never leaks into another request sharing the thread.
+    * Metrics: count and time every request, labelled by the *route template*
+      (never the raw path) to keep label cardinality bounded.
+    """
+    inbound = request.headers.get(CORRELATION_ID_HEADER)
+    correlation_id = inbound or new_correlation_id()
+    bind_correlation_id(correlation_id)
+    start = time.perf_counter()
+    status = 500  # default if call_next raises before assigning a response
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        response.headers[CORRELATION_ID_HEADER] = correlation_id
+        return response
+    finally:
+        # Runs before the return completes (and on exception), so metrics always
+        # record with the right status, and the id never leaks to another request.
+        elapsed = time.perf_counter() - start
+        route = request.scope.get("route")
+        path = getattr(route, "path", None) or "<unmatched>"
+        REQUEST_COUNT.labels(request.method, path, str(status)).inc()
+        REQUEST_LATENCY.labels(request.method, path).observe(elapsed)
+        clear_correlation_id()
+
+
 # --- Auth & rate limiting -----------------------------------------------------
 # Bearer-token auth on the mutating/ops API, plus a light per-IP rate limit on the
 # webhook + mutating endpoints. Both reuse the constant-time compare in
@@ -171,6 +223,72 @@ def healthz() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/readyz")
+def readyz(request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
+    """Deep readiness: are our backing services actually reachable *right now*?
+
+    Distinct from ``/healthz`` (liveness — "the process is up"). ``/readyz`` probes
+    the database and Redis and returns 503 unless both answer. An orchestrator
+    uses liveness to decide *restart* and readiness to decide *send traffic*; a
+    503 here with a green ``/healthz`` says "alive, but a dependency is down"
+    (e.g. Redis unreachable — ingestion can't enqueue) rather than "crashed".
+    """
+    checks: dict[str, str] = {}
+    ok = True
+
+    try:
+        db.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - readiness must not itself raise
+        checks["database"] = f"error: {exc}"
+        ok = False
+
+    client = request.app.state.redis
+    if client is None:
+        checks["redis"] = "unavailable"  # never connected at startup
+        ok = False
+    else:
+        try:
+            client.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks["redis"] = f"error: {exc}"
+            ok = False
+
+    response.status_code = 200 if ok else 503
+    return {"status": "ready" if ok else "not_ready", "checks": checks}
+
+
+def _refresh_domain_gauges(db: Session, queue: JobQueue | None) -> None:
+    """Set the pipeline-state gauges from the DB (and Redis) at scrape time.
+
+    Pull-at-scrape rather than tracked incrementally: at 1–50 req these queries
+    are trivial, and reading the source of truth on demand can't drift out of
+    sync with the tables the way hand-maintained counters would.
+    """
+    job_counts = _count_by_status(db, PRJob.status)
+    for js in JobStatus:
+        JOBS_GAUGE.labels(js.value).set(job_counts.get(js.value, 0))
+    decision_counts = _count_by_status(db, ReviewDecision.status)
+    for ds in DecisionStatus:
+        REVIEWS_GAUGE.labels(ds.value).set(decision_counts.get(ds.value, 0))
+    if queue is not None:
+        # A metrics scrape must never 500 on a degraded Redis; XLEN is best-effort.
+        with suppress(Exception):
+            QUEUE_DEPTH.set(queue.client.xlen(queue.stream))
+
+
+@app.get("/metrics")
+def metrics(request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
+    """Prometheus exposition. HTTP counters/latency come from the middleware;
+    pipeline gauges are refreshed from the database here, at scrape time."""
+    if not settings.metrics_enabled:
+        raise HTTPException(status_code=404, detail="metrics disabled")
+    _refresh_domain_gauges(db, request.app.state.queue)
+    payload, content_type = render_metrics()
+    return PlainTextResponse(content=payload, media_type=content_type)
+
+
 @app.post("/webhook", dependencies=[Depends(_webhook_rl)])
 async def webhook(
     request: Request,
@@ -201,7 +319,18 @@ async def webhook(
         return {"status": "ignored", "event": x_github_event}
 
     # 3. Idempotent persist + enqueue. Duplicates are a no-op.
-    result = ingest(db, queue, pr)
+    from redis.exceptions import RedisError
+
+    try:
+        result = ingest(db, queue, pr)
+    except RedisError as exc:
+        # The job row is committed PENDING before the publish (see app.ingest),
+        # so a publish failure is recoverable: the worker's startup reconcile
+        # re-enqueues PENDING jobs. Surface 503 (not 500) so GitHub retries the
+        # delivery rather than treating it as a permanent bug.
+        log.error("webhook.enqueue_failed", error=str(exc), repo=pr.repo, pr=pr.pr_number)
+        response.status_code = 503
+        return {"detail": "queue temporarily unavailable"}
     log.info(
         "webhook.ingested",
         job_id=result.job_id,
@@ -223,6 +352,17 @@ async def webhook(
 # elevated-risk action reaches GitHub — the pipeline itself never does.
 
 
+def _pr_review_url(repo: str, pr_number: int) -> str:
+    """Deep link to a PR's review screen on the GitHub web UI.
+
+    In hand-off mode this is the primary call to action: the maintainer opens it
+    and approves / requests changes / edits the PR under their OWN account —
+    AutoPR performs no write. Derived from settings.github_web_url so it is
+    correct for github.com and GitHub Enterprise alike.
+    """
+    return f"{settings.github_web_url}/{repo}/pull/{pr_number}/files"
+
+
 def _decision_view(row) -> dict:
     """Serialize a ReviewDecision for the API (body included; it's the point)."""
     return {
@@ -237,6 +377,7 @@ def _decision_view(row) -> dict:
         "body": row.body,
         "status": row.status.value if hasattr(row.status, "value") else row.status,
         "result_url": row.result_url,
+        "review_url": _pr_review_url(row.repo, row.pr_number),
         "last_error": getattr(row, "last_error", None),
         "created_at": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
         "updated_at": row.updated_at.isoformat() if getattr(row, "updated_at", None) else None,
@@ -276,6 +417,26 @@ def approve_review(
     if row.status == DecisionStatus.REJECTED:
         response.status_code = 409
         return {"detail": "decision was rejected"}
+
+    if settings.handoff_mode:
+        # Hand-off mode performs no GitHub write. "Approve" records that the
+        # maintainer has taken it to GitHub to act under their own account; we
+        # mark it handled and point at the review screen.
+        url = _pr_review_url(row.repo, row.pr_number)
+        store.mark_approved(db, row)
+        store.mark_executed(db, row, url)
+        log.info(
+            "audit.review_handed_off",
+            decision_id=row.id,
+            action=row.action,
+            risk=row.risk,
+            repo=row.repo,
+            pr_number=row.pr_number,
+            actor_ip=_client_ip(request),
+            outcome="handed_off",
+            review_url=url,
+        )
+        return {"status": "handed_off", "url": url, "decision": _decision_view(row)}
 
     store.mark_approved(db, row)
     # Reconstruct the minimal state the executor needs from the stored row.
@@ -402,6 +563,8 @@ def stats(db: Session = Depends(get_db)) -> dict:
             "github_dry_run": settings.github_dry_run,
             "live_github": bool(settings.github_token),
             "auto_comment_max_risk": settings.auto_comment_max_risk,
+            "github_web_url": settings.github_web_url,
+            "handoff_mode": settings.handoff_mode,
         },
     }
 

@@ -159,4 +159,18 @@ def _parse_xread(resp: Any) -> list[StreamMessage]:
 
 
 def make_client(url: str | None = None) -> redis.Redis:
-    return redis.Redis.from_url(url or settings.redis_url)
+    """Build a Redis client with bounded timeouts and connection health checks.
+
+    Every socket op is bounded (socket_timeout) so a dead server surfaces as a
+    TimeoutError the caller can turn into a 503 rather than hanging a request
+    thread; socket_connect_timeout bounds the initial connect; health_check_interval
+    pings idle pooled connections so a silently-dropped one is detected and
+    replaced; retry_on_timeout retries a single transient blip before raising.
+    """
+    return redis.Redis.from_url(
+        url or settings.redis_url,
+        socket_timeout=settings.redis_socket_timeout_s,
+        socket_connect_timeout=settings.redis_connect_timeout_s,
+        health_check_interval=settings.redis_health_check_interval_s,
+        retry_on_timeout=True,
+    )

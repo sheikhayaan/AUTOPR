@@ -20,6 +20,14 @@
     text-rendering: optimizeLegibility;
   }
 
+  /* Display serif (Fraunces) for headings — the elegance lever. Variable
+     optical sizing so larger headings pick up higher contrast automatically. */
+  .font-display {
+    font-family: theme('fontFamily.display');
+    font-optical-sizing: auto;
+    letter-spacing: -0.015em;
+  }
+
   /* Numbers should align in tables and stat tiles. */
   .tnum {
     font-variant-numeric: tabular-nums;
@@ -27,34 +35,50 @@
   }
 
   ::selection {
-    background: rgba(99, 102, 241, 0.35);
+    background: rgba(214, 183, 110, 0.28);
+    color: #fff;
   }
 
-  /* A restrained, dark scrollbar that matches the surfaces. */
+  /* A restrained, warm scrollbar that matches the surfaces. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+    scrollbar-color: rgba(214, 183, 110, 0.18) transparent;
   }
   *::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
   *::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.14);
+    background: rgba(214, 183, 110, 0.16);
     border-radius: 9999px;
     border: 2px solid transparent;
     background-clip: content-box;
   }
   *::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.24);
+    background: rgba(214, 183, 110, 0.28);
     background-clip: content-box;
   }
 }
 
 @layer components {
-  /* The elevated card surface used across the app. */
+  /* Gilded text — champagne→gold gradient clipped to the glyphs. For the
+     wordmark and hero numerals. */
+  .text-gold {
+    @apply bg-gold-text bg-clip-text text-transparent;
+  }
+
+  /* The elevated card surface used across the app. A subtle top-lit gradient
+     plus a hairline gold seam along the top edge give it a jewel-box depth
+     rather than a flat panel. */
   .card {
-    @apply rounded-2xl border border-line bg-surface shadow-card;
+    @apply relative rounded-2xl border border-line shadow-card;
+    background-image:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.028), transparent 42%),
+      linear-gradient(180deg, #16111f, #120e1b);
+  }
+  .card::before {
+    content: '';
+    @apply pointer-events-none absolute inset-x-6 top-0 h-px bg-gold-line opacity-60;
   }
 
   .card-2 {
@@ -63,7 +87,7 @@
 
   /* Small uppercase section eyebrow. */
   .eyebrow {
-    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint;
+    @apply text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-faint;
   }
 
   /* Pill / chip base. */
@@ -80,6 +104,14 @@
   }
   .btn-primary {
     @apply btn bg-brand-500 text-white shadow-glow hover:bg-brand-600 active:translate-y-px;
+  }
+  /* Ceremonial CTA — gilded, for the single most important action (Approve). */
+  .btn-royal {
+    @apply btn text-canvas shadow-glow-gold active:translate-y-px;
+    background-image: linear-gradient(135deg, #f6e6ac, #d6b76e 55%, #c19a47);
+  }
+  .btn-royal:hover {
+    background-image: linear-gradient(135deg, #f8ecbb, #dcc07d 55%, #caa252);
   }
   .btn-ghost {
     @apply btn border border-line bg-surface-2 text-ink-dim hover:border-line-strong
@@ -100,12 +132,7 @@
   .skeleton::after {
     content: '';
     @apply absolute inset-0;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      rgba(255, 255, 255, 0.06),
-      transparent
-    );
+    background: linear-gradient(90deg, transparent, rgba(214, 183, 110, 0.08), transparent);
     animation: shimmer 1.4s infinite;
   }
   @keyframes shimmer {

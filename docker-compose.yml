@@ -1,6 +1,7 @@
-# AutoPR — Phase 1 infrastructure.
-# Brings up: FastAPI api, background worker, Postgres, Redis, Qdrant.
-# `docker compose up --build` then POST to http://localhost:8000/webhook.
+# AutoPR — local / self-hosted stack: FastAPI api, background worker, Postgres,
+# Redis, Qdrant. `docker compose up --build` (requires AUTOPR_WEBHOOK_SECRET and
+# AUTOPR_API_TOKEN in .env), then POST to http://localhost:8000/webhook.
+# The cloud deploy path is separate: fly.toml + .github/workflows/release.yml.
 
 services:
   postgres:
@@ -40,13 +41,13 @@ services:
       - qdrant_storage:/qdrant/storage
     # Qdrant is used from Phase 2; declared now so infra is complete.
 
-  # Phase 3: the fix-verification sandbox is NOT a long-running service. It is a
-  # one-shot image the worker spawns per verification via `docker run` (with
-  # --network none and resource caps; see app/sandbox/runner.py). Build it once:
+  # The fix-verification sandbox is NOT a long-running service. It is a one-shot
+  # image the worker spawns per verification via `docker run` (with --network
+  # none and resource caps; see app/sandbox/runner.py). Build it once:
   #     docker build -f docker/sandbox.Dockerfile -t autopr-sandbox:latest .
-  # The worker container would need the Docker socket mounted to spawn it
-  # (docker-out-of-docker): add to the worker service when the graph is wired in:
-  #     volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+  # The worker mounts the host Docker socket (below) to spawn it. This sandbox
+  # path is a local/Compose capability: a shared cloud VM has no Docker socket,
+  # so the cloud image omits it — see docs/decisions/phase-12.md.
 
   api:
     build: .
@@ -69,7 +70,25 @@ services:
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
     ports:
       - "8000:8000"
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # Migrations run here (only) as a release step, before serving. A single
+    # uvicorn process is right for the stated 1–50 req scale — no gunicorn farm.
+    # --timeout-graceful-shutdown bounds how long a SIGTERM waits for in-flight
+    # requests to finish before the process is forced down, so a deploy/restart
+    # can't hang indefinitely on a slow request.
+    command:
+      ["sh", "-c",
+       "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30"]
+    healthcheck:
+      # No curl in the slim image — probe with the stdlib. /readyz is deep
+      # readiness (DB + Redis reachable), so the worker's `api: service_healthy`
+      # gate below means "api is truly ready", not merely "process alive".
+      test:
+        ["CMD-SHELL",
+         "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/readyz').status==200 else 1)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
 
   worker:
     build: .
@@ -77,6 +96,11 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Wait for the api to finish `alembic upgrade head` before starting, so
+      # only ONE service migrates (no concurrent-upgrade race). The worker's own
+      # create_all is then an idempotent no-op against the migrated schema.
+      api:
         condition: service_healthy
     environment:
       AUTOPR_DATABASE_URL: postgresql+psycopg://autopr:autopr@postgres:5432/autopr
@@ -87,6 +111,12 @@ services:
       AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:?set AUTOPR_WEBHOOK_SECRET in .env}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
     command: ["python", "-m", "app.worker"]
+    # The worker spawns the fix-verification sandbox via `docker run` (Phase 3),
+    # so it needs the host Docker socket (docker-out-of-docker). Safe for a
+    # single-operator showcase; a hardened deploy would use a rootless/remote
+    # builder instead — flagged in the decisions log.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     # Scale workers to prove crash-recovery / concurrent consumption:
     #   docker compose up --scale worker=3
 

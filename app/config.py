@@ -59,9 +59,28 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+pysqlite:///./autopr.db"
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- Redis client robustness (Phase 8) ---
+    # Bound every Redis call so a dead server or network blip surfaces as a
+    # timeout we can convert to a 503, instead of hanging the request thread
+    # indefinitely. socket_timeout must exceed the longest blocking read: the
+    # worker's consume() blocks up to block_ms (2s in the worker loop, 5s
+    # default), so 10s leaves headroom without wedging on a truly dead server.
+    redis_socket_timeout_s: float = 10.0
+    redis_connect_timeout_s: float = 5.0
+    redis_health_check_interval_s: int = 30
+
     # --- Redis Streams ---
     stream_name: str = "autopr:jobs"
     consumer_group: str = "autopr-workers"
+
+    # --- Observability (Phase 9) ---
+    # JSON logs (one event per line) are the production default: greppable and
+    # ready for a log pipeline. Flip to false locally for the colourised console
+    # renderer. Both the API and the worker read this through configure_logging.
+    log_json: bool = True
+    # Expose GET /metrics (Prometheus text format). On by default; toggle off if
+    # a deployment scrapes elsewhere or wants the endpoint closed.
+    metrics_enabled: bool = True
 
     # --- Worker behaviour ---
     max_attempts: int = 5
@@ -72,6 +91,10 @@ class Settings(BaseSettings):
     # --- Later phases (declared now so config is complete) ---
     qdrant_url: str = "http://localhost:6333"
     groq_api_key: str = ""
+    # Hard per-request ceiling on the Groq call (seconds). A hung LLM must not
+    # wedge a worker; tenacity (see agents.common) still retries transient
+    # failures, each attempt bounded by this timeout.
+    llm_timeout_s: float = 30.0
 
     # --- Phase 3: sandboxed fix verification ---
     # The image the verifier runs patches inside. Built from
@@ -104,6 +127,19 @@ class Settings(BaseSettings):
     # human. Any code-changing action is always gated regardless of this.
     auto_comment_max_risk: str = "low"
 
+    # --- Phase 13: hand-off mode (tokenless "route to people, they act") -----
+    # When true, AutoPR NEVER writes to GitHub — not a comment, not a review,
+    # not a push — even if a token happens to be set. It READS the PR (public
+    # repos need no token: the reader omits the auth header; private repos still
+    # supply a read token), the pipeline generates the review, and every
+    # decision is routed to the human queue. Each queued item surfaces a deep
+    # link to the PR's review screen, where a maintainer approves / requests
+    # changes / edits under their OWN GitHub account. This is the model for
+    # "send an approval request to people's own GitHub" without AutoPR holding
+    # write credentials. Off by default; the token-based auto/dry-run paths are
+    # unchanged when it is off. See docs/decisions/phase-13.md.
+    handoff_mode: bool = False
+
     # --- Phase 5: CI-fix track (repo tree snapshot for the sandbox) ---
     # The fix verifier needs a snapshot of the repo to apply the patch to. We
     # fetch it as a single tarball and keep only decodable text files, bounded on
@@ -122,6 +158,26 @@ class Settings(BaseSettings):
         """Parse cors_origins into a list; a literal '*' means allow-all."""
         origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
         return ["*"] if "*" in origins else origins
+
+    @property
+    def github_web_url(self) -> str:
+        """The GitHub *web* origin, derived from the REST API base.
+
+        The dashboard links to pull requests on the web UI, whose host differs
+        from the API host: ``api.github.com`` → ``github.com``. For GitHub
+        Enterprise the API lives under a path (``https://ghe.example.com/api/v3``)
+        while the web UI is the bare host (``https://ghe.example.com``). Deriving
+        it here keeps ``github_api_url`` the single source of truth, so the
+        frontend never has to hard-code ``github.com``.
+        """
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(self.github_api_url)
+        host = parts.netloc
+        if host == "api.github.com":
+            return "https://github.com"
+        scheme = parts.scheme or "https"
+        return f"{scheme}://{host}"
 
     @model_validator(mode="after")
     def _enforce_secure_secret(self) -> Settings:

@@ -94,6 +94,9 @@ def test_stats_empty(client):
     # Config surface is always present so the UI can render the dry-run banner.
     assert "github_dry_run" in body["config"]
     assert "auto_comment_max_risk" in body["config"]
+    # The web host the dashboard links PRs to, derived from the API base so the
+    # frontend never hard-codes github.com.
+    assert body["config"]["github_web_url"] == "https://github.com"
 
 
 def test_stats_counts_by_status(client):

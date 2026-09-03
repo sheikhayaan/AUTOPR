@@ -33,8 +33,51 @@ jobs:
       - name: Pytest + coverage gate
         run: uv run --frozen --extra dev pytest --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=78
 
+  migrations:
+    name: Alembic round-trip (real Postgres)
+    runs-on: ubuntu-latest
+    # The unit suite is hermetic (in-memory SQLite + fakeredis) so it stays fast
+    # and offline. This job covers the path that hermeticity skips: that the
+    # generated migration is valid *Postgres* DDL and is reversible. It brings up
+    # a real Postgres and drives the schema up → down → up.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autopr
+          POSTGRES_PASSWORD: autopr
+          POSTGRES_DB: autopr
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U autopr -d autopr"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      AUTOPR_DATABASE_URL: postgresql+psycopg://autopr:autopr@localhost:5432/autopr
+      # The migration layer imports app.config; a placeholder secret would trip
+      # the fail-fast validator, so allow it explicitly for this CI-only run.
+      AUTOPR_ALLOW_INSECURE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen --extra dev
+      - name: Upgrade to head (creates the full schema)
+        run: uv run --frozen alembic upgrade head
+      - name: Verify we are at head
+        run: uv run --frozen alembic current | grep -q '(head)'
+      - name: Downgrade to base (proves every downgrade() is valid)
+        run: uv run --frozen alembic downgrade base
+      - name: Upgrade to head again (proves idempotent, repeatable)
+        run: uv run --frozen alembic upgrade head
+
   frontend:
-    name: Build (frontend)
+    name: Lint, type-check, test, build (frontend)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -48,7 +91,13 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install (clean, from lockfile)
         run: npm ci
-      - name: Build
+      - name: ESLint
+        run: npm run lint
+      - name: Prettier (format check)
+        run: npm run format
+      - name: Vitest
+        run: npm test
+      - name: Build (tsc type-check + vite bundle)
         run: npm run build
 
   images:
