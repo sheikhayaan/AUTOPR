@@ -62,9 +62,7 @@ def test_client_never_writes_even_with_token(handoff, monkeypatch):
 def test_pr_review_is_always_gated_in_handoff(handoff, monkeypatch):
     # Even a trivial-risk review (normally auto-posted) must require approval.
     monkeypatch.setattr(settings, "auto_comment_max_risk", "high", raising=False)
-    decision = policy._route_pr(
-        {"risk_score": "trivial", "summary": "s", "review_findings": []}
-    )
+    decision = policy._route_pr({"risk_score": "trivial", "summary": "s", "review_findings": []})
     assert decision.requires_approval is True
 
 

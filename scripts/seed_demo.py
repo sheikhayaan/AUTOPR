@@ -19,6 +19,7 @@ The data is shaped to exercise every state the UI renders:
   * decision history covering executed / rejected / failed outcomes,
 so the Overview distributions, the Review Queue, and the Jobs table all light up.
 """
+
 from __future__ import annotations
 
 import sys
@@ -203,8 +204,20 @@ _Dependency changes have wide blast radius and can't be verified offline
 
 # --- Row builders -----------------------------------------------------------
 
-def job(repo, pr, sha, author, status, *, attempts=1, event="pull_request",
-        summary=None, last_error=None, created):
+
+def job(
+    repo,
+    pr,
+    sha,
+    author,
+    status,
+    *,
+    attempts=1,
+    event="pull_request",
+    summary=None,
+    last_error=None,
+    created,
+):
     return {
         "row": PRJob(
             dedup_key=f"{repo}|{pr}|{sha}|{event}",
@@ -223,8 +236,21 @@ def job(repo, pr, sha, author, status, *, attempts=1, event="pull_request",
     }
 
 
-def decision(repo, pr, sha, action, risk, reason, title, body, status, *,
-             result_url=None, last_error=None, created):
+def decision(
+    repo,
+    pr,
+    sha,
+    action,
+    risk,
+    reason,
+    title,
+    body,
+    status,
+    *,
+    result_url=None,
+    last_error=None,
+    created,
+):
     return ReviewDecision(
         dedup_key=f"{repo}|{pr}|{sha}|{action}",
         repo=repo,
@@ -244,75 +270,195 @@ def decision(repo, pr, sha, action, risk, reason, title, body, status, *,
 
 
 JOBS = [
-    job("acme/auth-service", 77, "9f3c1a2b4d5e6f70", "priya-dev",
-        JobStatus.PROCESSING, created=ago(minutes=1),
-        summary=None),
-    job("acme/data-pipeline", 231, "1b2c3d4e5f60718a", "sam-ml",
-        JobStatus.QUEUED, created=ago(minutes=2)),
-    job("acme/mobile-app", 305, "abcd1234ef567890", "lena-mobile",
-        JobStatus.DONE, created=ago(minutes=6),
-        summary="review: risk=high action=escalate (queued for approval)"),
-    job("acme/web-dashboard", 1290, "77aa88bb99cc00dd", "kenji-fe",
-        JobStatus.DONE, created=ago(minutes=14),
-        summary="review: risk=low action=comment_review (auto-posted)"),
-    job("acme/payments-api", 482, "deadbeef0badc0de", "marco-pay",
-        JobStatus.DONE, created=ago(minutes=27),
-        summary="review: risk=trivial action=comment_review (auto-posted)"),
-    job("acme/infra-terraform", 58, "5e5e5e5e6f6f6f6f", "ops-bot",
-        JobStatus.PENDING, created=ago(minutes=1, seconds=20)),
-    job("acme/legacy-monolith", 9001, "0f0f0f0f1a1a1a1a", "contractor-x",
-        JobStatus.DEAD, attempts=5, created=ago(hours=1, minutes=5),
-        last_error="GitHub read failed: 404 Not Found (PR may be closed or private)"),
+    job(
+        "acme/auth-service",
+        77,
+        "9f3c1a2b4d5e6f70",
+        "priya-dev",
+        JobStatus.PROCESSING,
+        created=ago(minutes=1),
+        summary=None,
+    ),
+    job(
+        "acme/data-pipeline",
+        231,
+        "1b2c3d4e5f60718a",
+        "sam-ml",
+        JobStatus.QUEUED,
+        created=ago(minutes=2),
+    ),
+    job(
+        "acme/mobile-app",
+        305,
+        "abcd1234ef567890",
+        "lena-mobile",
+        JobStatus.DONE,
+        created=ago(minutes=6),
+        summary="review: risk=high action=escalate (queued for approval)",
+    ),
+    job(
+        "acme/web-dashboard",
+        1290,
+        "77aa88bb99cc00dd",
+        "kenji-fe",
+        JobStatus.DONE,
+        created=ago(minutes=14),
+        summary="review: risk=low action=comment_review (auto-posted)",
+    ),
+    job(
+        "acme/payments-api",
+        482,
+        "deadbeef0badc0de",
+        "marco-pay",
+        JobStatus.DONE,
+        created=ago(minutes=27),
+        summary="review: risk=trivial action=comment_review (auto-posted)",
+    ),
+    job(
+        "acme/infra-terraform",
+        58,
+        "5e5e5e5e6f6f6f6f",
+        "ops-bot",
+        JobStatus.PENDING,
+        created=ago(minutes=1, seconds=20),
+    ),
+    job(
+        "acme/legacy-monolith",
+        9001,
+        "0f0f0f0f1a1a1a1a",
+        "contractor-x",
+        JobStatus.DEAD,
+        attempts=5,
+        created=ago(hours=1, minutes=5),
+        last_error="GitHub read failed: 404 Not Found (PR may be closed or private)",
+    ),
     # CI-fix track (Phase 5): a check_run failure whose fix was sandbox-verified,
     # and a workflow_run failure that couldn't be auto-fixed (dependency conflict).
-    job("acme/checkout-service", 512, "c1c2c3c4d5d6e7f8", "github-actions",
-        JobStatus.DONE, event="check_run", created=ago(minutes=4),
-        summary="ci-fix pr acme/checkout-service#512: failure=test verified=True action=propose_fix"),
-    job("acme/notifications", 143, "a9b8c7d6e5f40312", "github-actions",
-        JobStatus.DONE, event="workflow_run", created=ago(minutes=9),
-        summary="ci-fix pr acme/notifications#143: failure=dependency verified=False action=escalate"),
+    job(
+        "acme/checkout-service",
+        512,
+        "c1c2c3c4d5d6e7f8",
+        "github-actions",
+        JobStatus.DONE,
+        event="check_run",
+        created=ago(minutes=4),
+        summary="ci-fix pr acme/checkout-service#512: failure=test verified=True action=propose_fix",
+    ),
+    job(
+        "acme/notifications",
+        143,
+        "a9b8c7d6e5f40312",
+        "github-actions",
+        JobStatus.DONE,
+        event="workflow_run",
+        created=ago(minutes=9),
+        summary="ci-fix pr acme/notifications#143: failure=dependency verified=False action=escalate",
+    ),
 ]
 
 DECISIONS = [
     # Pending — these populate the Review Queue (oldest first there).
     # A sandbox-verified fix is ALWAYS human-gated (never auto-promoted).
-    decision("acme/checkout-service", 512, "c1c2c3c4d5d6e7f8", "propose_fix",
-             "medium", "verified_fix_needs_promotion",
-             "Verified fix ready for maintainer approval",
-             BODY_PROPOSE_FIX, DecisionStatus.PENDING, created=ago(minutes=4)),
-    decision("acme/notifications", 143, "a9b8c7d6e5f40312", "escalate",
-             "medium", "not_verifiable",
-             "CI failure needs human attention",
-             BODY_CI_ESCALATE, DecisionStatus.PENDING, created=ago(minutes=9)),
-    decision("acme/mobile-app", 305, "abcd1234ef567890", "escalate", "high",
-             "elevated_risk_needs_approval",
-             "Broad refactor touches the auth flow — needs human review",
-             BODY_ESCALATE, DecisionStatus.PENDING, created=ago(minutes=6)),
-    decision("acme/auth-service", 77, "9f3c1a2b4d5e6f70", "comment_review",
-             "medium", "elevated_risk_needs_approval",
-             "Possible SQL injection in token lookup",
-             BODY_SQLI, DecisionStatus.PENDING, created=ago(minutes=1)),
+    decision(
+        "acme/checkout-service",
+        512,
+        "c1c2c3c4d5d6e7f8",
+        "propose_fix",
+        "medium",
+        "verified_fix_needs_promotion",
+        "Verified fix ready for maintainer approval",
+        BODY_PROPOSE_FIX,
+        DecisionStatus.PENDING,
+        created=ago(minutes=4),
+    ),
+    decision(
+        "acme/notifications",
+        143,
+        "a9b8c7d6e5f40312",
+        "escalate",
+        "medium",
+        "not_verifiable",
+        "CI failure needs human attention",
+        BODY_CI_ESCALATE,
+        DecisionStatus.PENDING,
+        created=ago(minutes=9),
+    ),
+    decision(
+        "acme/mobile-app",
+        305,
+        "abcd1234ef567890",
+        "escalate",
+        "high",
+        "elevated_risk_needs_approval",
+        "Broad refactor touches the auth flow — needs human review",
+        BODY_ESCALATE,
+        DecisionStatus.PENDING,
+        created=ago(minutes=6),
+    ),
+    decision(
+        "acme/auth-service",
+        77,
+        "9f3c1a2b4d5e6f70",
+        "comment_review",
+        "medium",
+        "elevated_risk_needs_approval",
+        "Possible SQL injection in token lookup",
+        BODY_SQLI,
+        DecisionStatus.PENDING,
+        created=ago(minutes=1),
+    ),
     # History — executed / rejected / failed.
-    decision("acme/web-dashboard", 1290, "77aa88bb99cc00dd", "comment_review",
-             "low", "low_risk_auto", "Consistent rename, no behavior change",
-             BODY_LOW_EXECUTED, DecisionStatus.EXECUTED,
-             result_url="https://github.com/acme/web-dashboard/pull/1290#issuecomment-2001",
-             created=ago(minutes=14)),
-    decision("acme/payments-api", 482, "deadbeef0badc0de", "comment_review",
-             "trivial", "low_risk_auto", "Docstring typo fix",
-             BODY_TRIVIAL_EXECUTED, DecisionStatus.EXECUTED,
-             result_url="https://github.com/acme/payments-api/pull/482#issuecomment-1990",
-             created=ago(minutes=27)),
-    decision("acme/data-pipeline", 231, "1b2c3d4e5f60718a", "comment_review",
-             "medium", "elevated_risk_needs_approval",
-             "Removed null guard in transform()",
-             BODY_REJECTED, DecisionStatus.REJECTED, created=ago(minutes=40)),
-    decision("acme/legacy-monolith", 9001, "0f0f0f0f1a1a1a1a", "comment_review",
-             "medium", "elevated_risk_needs_approval",
-             "Overly-broad exception handler in billing job",
-             BODY_FAILED, DecisionStatus.FAILED,
-             last_error="GitHub API 403: resource not accessible by integration",
-             created=ago(hours=1)),
+    decision(
+        "acme/web-dashboard",
+        1290,
+        "77aa88bb99cc00dd",
+        "comment_review",
+        "low",
+        "low_risk_auto",
+        "Consistent rename, no behavior change",
+        BODY_LOW_EXECUTED,
+        DecisionStatus.EXECUTED,
+        result_url="https://github.com/acme/web-dashboard/pull/1290#issuecomment-2001",
+        created=ago(minutes=14),
+    ),
+    decision(
+        "acme/payments-api",
+        482,
+        "deadbeef0badc0de",
+        "comment_review",
+        "trivial",
+        "low_risk_auto",
+        "Docstring typo fix",
+        BODY_TRIVIAL_EXECUTED,
+        DecisionStatus.EXECUTED,
+        result_url="https://github.com/acme/payments-api/pull/482#issuecomment-1990",
+        created=ago(minutes=27),
+    ),
+    decision(
+        "acme/data-pipeline",
+        231,
+        "1b2c3d4e5f60718a",
+        "comment_review",
+        "medium",
+        "elevated_risk_needs_approval",
+        "Removed null guard in transform()",
+        BODY_REJECTED,
+        DecisionStatus.REJECTED,
+        created=ago(minutes=40),
+    ),
+    decision(
+        "acme/legacy-monolith",
+        9001,
+        "0f0f0f0f1a1a1a1a",
+        "comment_review",
+        "medium",
+        "elevated_risk_needs_approval",
+        "Overly-broad exception handler in billing job",
+        BODY_FAILED,
+        DecisionStatus.FAILED,
+        last_error="GitHub API 403: resource not accessible by integration",
+        created=ago(hours=1),
+    ),
 ]
 
 
@@ -325,9 +471,9 @@ def main() -> None:
         demo_job_ids = [
             r[0]
             for r in db.execute(
-                PRJob.__table__.select().with_only_columns(PRJob.id).where(
-                    PRJob.repo.like(f"{DEMO_ORG}%")
-                )
+                PRJob.__table__.select()
+                .with_only_columns(PRJob.id)
+                .where(PRJob.repo.like(f"{DEMO_ORG}%"))
             ).all()
         ]
         if demo_job_ids:
@@ -349,9 +495,7 @@ def main() -> None:
         n_jobs = db.query(PRJob).filter(PRJob.repo.like(f"{DEMO_ORG}%")).count()
         n_dec = db.query(ReviewDecision).filter(ReviewDecision.repo.like(f"{DEMO_ORG}%")).count()
         n_pending = (
-            db.query(ReviewDecision)
-            .filter(ReviewDecision.status == DecisionStatus.PENDING)
-            .count()
+            db.query(ReviewDecision).filter(ReviewDecision.status == DecisionStatus.PENDING).count()
         )
         print(f"Seeded {n_jobs} jobs and {n_dec} review decisions ({n_pending} pending).")
         print("Start the API (uvicorn app.main:app --reload) and the dashboard to see it.")
