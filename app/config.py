@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # --- Later phases (declared now so config is complete) ---
     qdrant_url: str = "http://localhost:6333"
     groq_api_key: str = ""
+    # Groq model id for all agents. Empty => the code default (llm.DEFAULT_MODEL).
+    # Overridable via AUTOPR_LLM_MODEL since Groq's catalog changes over time.
+    llm_model: str = ""
     # Hard per-request ceiling on the Groq call (seconds). A hung LLM must not
     # wedge a worker; tenacity (see agents.common) still retries transient
     # failures, each attempt bounded by this timeout.

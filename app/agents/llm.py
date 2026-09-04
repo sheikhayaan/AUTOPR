@@ -14,8 +14,10 @@ from pydantic import SecretStr
 
 from app.config import settings
 
-# Llama 3.3 70B via Groq: strong reasoning, fast inference, generous free tier.
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# GPT-OSS 120B via Groq: strong reasoning, fast inference, generous free tier.
+# (Groq retired llama-3.3-70b-versatile; this is the current large general model.)
+# Overridable via AUTOPR_LLM_MODEL for easy swaps as Groq's catalog changes.
+DEFAULT_MODEL = settings.llm_model or "openai/gpt-oss-120b"
 
 
 @lru_cache(maxsize=8)
