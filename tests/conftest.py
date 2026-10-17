@@ -9,8 +9,11 @@ Fidelity caveats (also in the decisions log):
   * fakeredis implements XADD/XREADGROUP/XACK/XAUTOCLAIM, which is what we
     exercise, but it is not byte-for-byte Redis. The reclaim test asserts on
     observable behaviour (PEL count, redelivery) rather than internals.
-  * SQLite serialises writes, so the "race" test proves the unique-constraint
-    logic is correct but cannot reproduce true Postgres row-lock contention.
+  * SQLite serialises writes, so the "race" test proves unique-index arbitration
+    but cannot reproduce true Postgres row-lock contention. The race test uses the
+    file-backed ``race_engine`` fixture (one connection per thread) rather than the
+    shared-connection in-memory one, because a shared connection shares the
+    transaction and there is then no concurrency to observe.
 """
 
 from __future__ import annotations
@@ -26,9 +29,9 @@ os.environ.setdefault("AUTOPR_ALLOW_INSECURE", "1")
 
 import fakeredis
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.config import settings as _settings
 from app.models import Base
@@ -77,6 +80,46 @@ def db(Session):
         yield s
     finally:
         s.close()
+
+
+@pytest.fixture()
+def race_engine(tmp_path):
+    """Engine for the concurrency test: one *connection* per thread.
+
+    The shared in-memory ``engine`` fixture above cannot model a race. StaticPool
+    hands both threads the same DBAPI connection, so both sessions run inside one
+    transaction: whichever thread commits first ends the other's transaction and
+    closes its cursors, and ON CONFLICT has nothing to arbitrate between. That
+    produced a flaky test in *both* directions (~10% of runs reported two winners
+    or zero winners) with production code that was correct.
+
+    So: a real on-disk file, one connection per thread, and BEGIN IMMEDIATE so
+    the second writer waits on the lock instead of deadlocking — the same shape
+    as Postgres blocking on a conflicting unique index. It is still SQLite, so it
+    exercises index arbitration rather than row-level lock contention; that
+    distinction is in the ADR.
+    """
+    eng = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'race.db'}",
+        future=True,
+        connect_args={"check_same_thread": False, "timeout": 15},
+        poolclass=NullPool,
+    )
+
+    @event.listens_for(eng, "connect")
+    def _let_us_drive_transactions(dbapi_conn, _record):  # type: ignore[no-untyped-def]
+        # Take transaction control away from pysqlite so the "begin" hook below
+        # can issue BEGIN IMMEDIATE (pysqlite would otherwise emit a bare BEGIN,
+        # which takes the write lock lazily and can deadlock two writers).
+        dbapi_conn.isolation_level = None
+
+    @event.listens_for(eng, "begin")
+    def _begin_immediate(conn):  # type: ignore[no-untyped-def]
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+    Base.metadata.create_all(bind=eng)
+    yield eng
+    eng.dispose()
 
 
 @pytest.fixture()

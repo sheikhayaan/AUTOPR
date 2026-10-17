@@ -20,7 +20,7 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, select
 from sqlalchemy.orm import Session
 
-from app.db import insert_ignore_duplicates
+from app.db import insert_ignore_duplicates, supports_insert_returning
 from app.models import JobStatus, PRJob
 from app.observability import current_correlation_id
 from app.queue import JobQueue
@@ -209,12 +209,24 @@ def ingest(session: Session, queue: JobQueue, payload: PRPayload) -> IngestResul
          QUEUED. If it already existed, we do nothing further — this is the
          duplicate-delivery no-op.
 
-    Concurrency: if two requests race, the unique constraint guarantees only
-    one INSERT wins. The loser's `created` is False. Only the winner enqueues,
-    so there is exactly one stream message per PR head SHA.
+    Concurrency: if two requests race for the same head SHA, the unique
+    constraint on dedup_key guarantees exactly one INSERT commits; the loser's
+    statement is suppressed and its `created` is False. Only the winner
+    enqueues, so there is exactly one stream message per PR head SHA.
+
+    This assumes each caller has its own connection (one Session per request,
+    as in the API and the worker). Two sessions sharing a single connection
+    share a transaction, and then nothing — including `ON CONFLICT` — can
+    arbitrate between them; the test harness gives each thread its own
+    connection for exactly that reason.
     """
+    # Ask the INSERT itself who won. With RETURNING, a suppressed insert yields
+    # zero rows, which is the arbitration decision rather than a guess derived
+    # from cursor state; without it (SQLite < 3.35) we fall back to rowcount.
+    winning_id = supports_insert_returning()
     stmt = insert_ignore_duplicates(
         PRJob.__table__,
+        returning=PRJob.__table__.c.id if winning_id else None,
         values={
             "dedup_key": payload.dedup_key,
             "repo": payload.repo,
@@ -229,12 +241,15 @@ def ingest(session: Session, queue: JobQueue, payload: PRPayload) -> IngestResul
         index_elements=["dedup_key"],
     )
     result = session.execute(stmt)
+    if winning_id:
+        # Must be read before commit: committing closes the cursor.
+        created = result.first() is not None
+    else:
+        # Session.execute() is typed to return Result, but a Core INSERT yields a
+        # CursorResult, which is what carries rowcount. Cast so mypy sees it.
+        rowcount = cast("CursorResult[Any]", result).rowcount
+        created = bool(rowcount and rowcount > 0)
     session.commit()
-
-    # Session.execute() is typed to return Result, but a Core INSERT yields a
-    # CursorResult, which is what carries rowcount. Cast so mypy sees the attribute.
-    rowcount = cast("CursorResult[Any]", result).rowcount
-    created = bool(rowcount and rowcount > 0)
 
     job = session.execute(select(PRJob).where(PRJob.dedup_key == payload.dedup_key)).scalar_one()
 

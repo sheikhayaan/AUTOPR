@@ -9,6 +9,7 @@ far easier to test. Async is noted as an alternative in the decisions log.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -78,7 +79,24 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
-def insert_ignore_duplicates(table, values: dict, index_elements: list[str]):
+def supports_insert_returning() -> bool:
+    """True when ``INSERT ... ON CONFLICT DO NOTHING RETURNING`` is available.
+
+    Postgres always supports it. SQLite gained RETURNING in 3.35 (2021-03);
+    below that we fall back to ``rowcount`` and say so in the caller.
+    """
+    if not settings.is_sqlite:
+        return True
+    return sqlite3.sqlite_version_info >= (3, 35, 0)
+
+
+def insert_ignore_duplicates(
+    table,
+    values: dict,
+    index_elements: list[str],
+    *,
+    returning=None,
+):
     """Return a dialect-appropriate ``INSERT ... ON CONFLICT DO NOTHING``.
 
     This is the load-bearing primitive for idempotency: a duplicate webhook
@@ -86,9 +104,21 @@ def insert_ignore_duplicates(table, values: dict, index_elements: list[str]):
     inserted, rather than raising or creating a duplicate. Both Postgres and
     modern SQLite support the ON CONFLICT clause with the same semantics for
     our purposes; we branch only because the SQLAlchemy construct differs.
+
+    Pass ``returning=<column>`` to learn whether *this* statement inserted the
+    row, straight from the arbitration decision: a suppressed insert returns
+    zero rows. That is more trustworthy than ``rowcount``, which is a mutable
+    attribute of the cursor and can be read only while that cursor is still
+    live — awkward if anything commits the session in between.
     """
     if settings.is_sqlite:
-        sqlite_stmt = sqlite_insert(table).values(**values)
-        return sqlite_stmt.on_conflict_do_nothing(index_elements=index_elements)
-    pg_stmt = pg_insert(table).values(**values)
-    return pg_stmt.on_conflict_do_nothing(index_elements=index_elements)
+        sqlite_stmt = (
+            sqlite_insert(table)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=index_elements)
+        )
+        return sqlite_stmt if returning is None else sqlite_stmt.returning(returning)
+    pg_stmt = (
+        pg_insert(table).values(**values).on_conflict_do_nothing(index_elements=index_elements)
+    )
+    return pg_stmt if returning is None else pg_stmt.returning(returning)

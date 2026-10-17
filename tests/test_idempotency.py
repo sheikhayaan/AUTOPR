@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import sessionmaker
 
 from app.ingest import ingest
-from app.models import PRJob
+from app.models import JobStatus, PRJob
 
 
 def _job_count(session) -> int:
@@ -47,21 +49,37 @@ def test_different_sha_creates_new_job(db, queue, sample_payload):
     assert _stream_len(queue) == 2
 
 
-def test_concurrent_same_pr_creates_one_job(Session, queue, sample_payload):
+def test_concurrent_same_pr_creates_one_job(race_engine, queue, sample_payload):
     """(c) Two webhooks race for the same PR head SHA.
 
-    Each thread gets its own Session (as real requests would). The unique
-    constraint on dedup_key must ensure exactly one job + one enqueue, with
-    the loser reporting created=False.
+    Each thread gets its own connection (as real requests would), so the unique
+    index on dedup_key is the thing that decides the winner — exactly one
+    created=True, one job row, one stream message.
 
-    Note: SQLite serialises writes, so this validates the constraint-driven
-    logic rather than true Postgres lock contention (flagged in decisions log).
+    A barrier releases both threads into ingest() together so the overlap is
+    real rather than hopeful; on the file-backed race engine the loser blocks on
+    the write lock (busy timeout) and then sees the committed row.
     """
+    RaceSession = sessionmaker(
+        bind=race_engine, autoflush=False, expire_on_commit=False, future=True
+    )
+    start = threading.Barrier(2, timeout=10)
 
     def worker() -> bool:
-        s = Session()
+        s = RaceSession()
         try:
-            return ingest(s, queue, sample_payload).created
+            start.wait()  # both threads enter ingest() at the same moment
+            created = ingest(s, queue, sample_payload).created
+            # Assert the loser really did observe the winner's row rather than
+            # failing silently; this is the invariant a bare bool cannot express.
+            if not created:
+                assert (
+                    s.execute(select(PRJob).where(PRJob.dedup_key == sample_payload.dedup_key))
+                    .scalar_one()
+                    .status
+                    == JobStatus.QUEUED
+                )
+            return created
         finally:
             s.close()
 
@@ -70,9 +88,11 @@ def test_concurrent_same_pr_creates_one_job(Session, queue, sample_payload):
 
     assert sorted(results) == [False, True]  # exactly one winner
 
-    check = Session()
+    check = RaceSession()
     try:
-        assert _job_count(check) == 1
+        rows = check.execute(select(PRJob)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].status == JobStatus.QUEUED
     finally:
         check.close()
     assert _stream_len(queue) == 1

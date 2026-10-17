@@ -38,9 +38,17 @@ library is the wrong trade.
 
 **Chosen.** A `dedup_key = sha256(event|repo|pr|head_sha)` column with a UNIQUE
 constraint. Ingestion does `INSERT ... ON CONFLICT (dedup_key) DO NOTHING`,
-then reads back the row. Only the request that actually inserted the row (i.e.
-`rowcount == 1`) proceeds to `XADD`. Duplicates and race-losers get
-`created=False` and enqueue nothing.
+then reads back the row. Only the request that actually inserted the row
+proceeds to `XADD`. Duplicates and race-losers get `created=False` and enqueue
+nothing.
+
+**How "actually inserted" is decided.** The insert asks for `RETURNING id`: a
+suppressed conflict yields zero rows, so the answer is the arbitration decision
+itself rather than something inferred afterwards. On SQLite older than 3.35
+(no `RETURNING`) it falls back to `rowcount == 1`. The original note said
+`rowcount`; that is a mutable property of the cursor, valid only while the
+cursor is open, and it misreported under a shared connection. See the
+addendum at the end of this document.
 
 **Why.** This makes idempotency a property enforced by the database under
 concurrency, not by hopeful application logic. Two webhooks racing for the same
@@ -134,11 +142,12 @@ they are scope boundaries for Phase 1.
    installed on the dev machine yet (agreed to defer). The application code is
    datastore-agnostic except one branch (`app/db.insert_ignore_duplicates`) that
    picks the SQLAlchemy dialect construct. **Fidelity gaps to state aloud:**
-   - The concurrency test uses SQLite with a `StaticPool` (single shared
-     connection). SQLite serialises writes, so the test proves the
-     *constraint-driven dedup logic* is correct but does **not** reproduce true
-     Postgres row-lock contention. On Postgres the same `ON CONFLICT` path holds;
-     the guarantee is the constraint, not the engine.
+   - The concurrency test uses a file-backed SQLite DB with one connection per
+     thread and `BEGIN IMMEDIATE`, so the unique index genuinely arbitrates
+     between two connections. It still does **not** reproduce true Postgres
+     row-lock contention: SQLite serialises writers on a single lock. On
+     Postgres the same `ON CONFLICT` path holds; the guarantee is the
+     constraint, not the engine.
    - fakeredis implements the stream commands we use
      (`XADD/XREADGROUP/XACK/XAUTOCLAIM/XPENDING`) but is not byte-for-byte Redis.
      The crash test asserts on *observable behaviour* (PEL count, redelivery,
@@ -169,3 +178,38 @@ they are scope boundaries for Phase 1.
 6. **Worker "work" is a placeholder** (`default_handler`). Phase 2 replaces it
    with the LangGraph pipeline. The exactly-once machinery around it is real; the
    thing it wraps is a stub by design at this phase.
+
+---
+
+## Addendum — the race test was lying, and the fix
+
+**Found.** `tests/test_idempotency.py::test_concurrent_same_pr_creates_one_job`
+failed intermittently in CI (~10% locally over 40 runs) in *both* directions:
+`[True, True]` and `[False, False]`. Two winners would mean two enqueues.
+
+**Cause was the harness, not `ingest`.** The shared `engine` fixture uses
+`StaticPool`, which hands *both* threads the same DBAPI connection. Two sessions
+on one connection share one transaction, so the first `commit()` ends the second
+thread's transaction and closes its cursors — and `rowcount` is read *after* the
+commit. `ON CONFLICT` had nothing to arbitrate between, because there were never
+two transactions. The test asserted a property its harness could not observe.
+
+**Fixed, two parts.**
+
+1. `race_engine` fixture: on-disk SQLite, `NullPool` (one connection per thread),
+   `timeout=15`, and a `begin` hook issuing `BEGIN IMMEDIATE` so the second
+   writer waits on the lock instead of deadlocking — the shape of Postgres
+   blocking on a conflicting unique index. The test now releases both threads
+   through a `Barrier` and additionally asserts the loser sees the winner's row
+   already `QUEUED`, which a bare boolean cannot express.
+2. `ingest` decides `created` from `INSERT ... RETURNING id` where the dialect
+   supports it, falling back to `rowcount`. The arbitration result is read
+   before `commit()`.
+
+**Result.** 60/60 consecutive runs of the race test pass; full suite 217 passed,
+2 skipped; coverage 84.2%, gate 78%.
+
+**Scope of the guarantee.** `ingest` requires one connection per caller — one
+`Session` per request, which is what the API and worker do. If two sessions ever
+share a connection, no `ON CONFLICT` can arbitrate and the invariant is void.
+That is now stated in the `ingest` docstring rather than assumed.
