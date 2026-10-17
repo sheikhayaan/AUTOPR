@@ -1,270 +1,160 @@
 # AutoPR
 
-**A multi-agent system that reviews pull requests and repairs failing CI — safely.**
+**A pull-request reviewer and CI repairer that is not allowed to write unsupervised.**
 
-AutoPR watches a repository's GitHub webhooks and, for every pull request or
-failed check, runs a LangGraph agent pipeline that reviews the diff, drafts
-tests, or proposes a fix. Anything that would change code, or carries more than
-trivial risk, is **never applied automatically** — it is queued for a human to
-approve on a dashboard. The system's job is to do the reading, reasoning, and
-drafting; the maintainer keeps the final say.
+AutoPR listens to GitHub webhooks, reviews diffs and failing checks with a LangGraph
+agent graph, and proposes fixes. Every proposal that changes code is parked as
+`PENDING` until a human approves it through an authenticated API call. Low-risk
+findings may post a *comment* on their own — that is the entire autonomy budget.
 
-![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
-![LangGraph](https://img.shields.io/badge/LangGraph-agents-1C3C3C)
-![Redis Streams](https://img.shields.io/badge/Redis-Streams-DC382D?logo=redis&logoColor=white)
-![Postgres](https://img.shields.io/badge/Postgres%20%2F%20SQLite-SQLAlchemy%202-4169E1?logo=postgresql&logoColor=white)
-![React](https://img.shields.io/badge/React%2018-TypeScript-3178C6?logo=react)
-![License](https://img.shields.io/badge/license-MIT-green)
+`Python 3.11` · `FastAPI` · `LangGraph` · `Redis Streams` · `Postgres` · `Qdrant` · `Docker` · MIT
 
-<!-- After the repo is pushed to GitHub, uncomment the live CI badge:
-[![CI](https://github.com/<owner>/autopr/actions/workflows/ci.yml/badge.svg)](https://github.com/<owner>/autopr/actions/workflows/ci.yml)
--->
+> No hosted demo. The service is only useful with a real GitHub token and write
+> credentials, and shipping those to a public URL is not a thing to do.
 
 ---
 
-## Why this exists (the one-paragraph pitch)
+## Why this exists
 
-Reviewing PRs and babysitting flaky CI is exactly the kind of high-volume,
-pattern-heavy work an LLM is good at — and exactly the kind of work you must
-**not** let an LLM do unsupervised, because the blast radius of a wrong automated
-commit is unbounded. AutoPR is built around that tension. The interesting
-engineering isn't the prompts; it's everything that makes an unreliable, slow,
-non-deterministic model safe to put in front of a real repository: **exactly-once
-job processing**, a **crash-safe queue**, a **dry-run write boundary**, and a
-**human-in-the-loop approval gate** that no agent can bypass.
+The interesting part of an LLM pipeline is not the prompts. It is everything
+around a model that is slow, non-deterministic, and occasionally wrong, because
+that is what decides whether the thing is safe to point at a real repository.
 
-It is deliberately right-sized for a **single-operator, 1–50-request** workload:
-one uvicorn process, SQLite-with-WAL by default (Postgres in Compose/cloud), and
-a single Redis stream. The correctness and safety machinery is production-grade;
-the horizontal-scale machinery is intentionally *not* built, and every such
-trade-off is written down in [`docs/decisions/`](docs/decisions/).
-
----
+AutoPR is built around one rule: **risk lowers autonomy, never raises it.** The
+router can demote a change from "auto-post a comment" to "ask a human", and it can
+never do the reverse.
 
 ## What it does
 
-```
-                         GitHub (pull_request / check_run / workflow_run)
-                                            │  HMAC-signed webhook
-                                            ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│  FastAPI ingress  (app/main.py)                                             │
-│  • verify signature (constant-time)   • idempotent persist   • enqueue      │
-│  • returns 200 immediately — no synchronous LLM work on the request path    │
-└───────────────────────────────────────────────────────────────────────────┘
-                                            │  Redis Streams  (at-least-once delivery)
-                                            ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│  Worker  (app/worker.py)                                                    │
-│  • consumer group + PEL reclaim (XAUTOCLAIM)   • reconcile-on-startup       │
-│  • exactly-once via a job_results ledger       • bounded retry → DEAD       │
-└───────────────────────────────────────────────────────────────────────────┘
-                                            │  invokes the graph
-                                            ▼
-┌──────────────────────────────┐        ┌───────────────────────────────────┐
-│  Track A — PR review          │        │  Track B — CI fix                  │
-│  code_reviewer → test_gen ─┐  │        │  ci_monitor → fix_agent →          │
-│                            ▼  │        │      fix_verifier (Docker sandbox) │
-│                        router  │        │              └──────► router      │
-└──────────────────────────────┘        └───────────────────────────────────┘
-                                            │  policy.route() — risk-based disposition
-                                            ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│  Router + human-in-the-loop                                                 │
-│  • ≤ low-risk *comment* → auto-post (dry-run by default)                     │
-│  • medium/high risk, OR any code change → queue a ReviewDecision (PENDING)  │
-└───────────────────────────────────────────────────────────────────────────┘
-                                            │
-                        ┌───────────────────┴────────────────────┐
-                        ▼                                         ▼
-             Operator dashboard (React/TS)          POST /reviews/{id}/approve|reject
-             — pending queue, jobs, history         — the ONLY path to a real GitHub write
+| Surface | Behaviour |
+| :-- | :-- |
+| `pull_request` | `code_reviewer` reads the diff, `test_gen` proposes tests for the changed code, the router scores the outcome |
+| `check_run` (failed) | `ci_monitor` reads the failure, `fix_agent` proposes a patch, `fix_verifier` replays the patch and re-runs the check |
+| Comment | Auto-posted only at `≤ low` risk, and dry-run is the default |
+| Code change | Always `PENDING`; applied only by `POST /reviews/{id}/approve` with a bearer token |
+| Dashboard | Read-only view of the queue, jobs, and decisions — the same ledger the worker writes |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    GH[GitHub] -->|signed webhook| ING[FastAPI ingress<br/>HMAC verify]
+    ING -->|XADD| RS[(Redis Streams<br/>consumer group)]
+    RS -->|XAUTOCLAIM on crash| WK[Worker]
+    WK --> DG{LangGraph}
+    DG -->|pull_request| A1[code_reviewer]
+    A1 --> A2[test_gen]
+    DG -->|check_run| B1[ci_monitor]
+    B1 --> B2[fix_agent]
+    B2 --> B3[fix_verifier<br/>docker sandbox]
+    A2 --> RT[Router · risk policy]
+    B3 --> RT
+    RT -->|low risk| CM[auto-comment]
+    RT -->|any code change| HQ[PENDING queue]
+    HQ -->|bearer-auth approve| AP[apply]
+    WK -.->|job_results ledger| DB[(Postgres)]
+    WK -.->|retrieval| QD[(Qdrant)]
 ```
 
-A fuller diagram and a walk-through of both tracks live in
-[`docs/architecture.md`](docs/architecture.md).
+### Request lifecycle
 
-### Two agent tracks
+1. **Ingress does no model work.** The raw body is HMAC-verified in constant time
+   before anything is parsed. The job row is persisted idempotently, the event is
+   `XADD`ed, and the request returns `200` immediately.
+2. **The queue is a Redis Stream, not `BackgroundTasks`.** A consumer group with
+   `XAUTOCLAIM` reclaims a dead worker's un-acked entries, and a startup reconcile
+   re-enqueues rows still marked `PENDING`.
+3. **Exactly-once-ish.** A `job_results` ledger keyed by `job_id`
+   (`INSERT … ON CONFLICT DO NOTHING`) turns at-least-once delivery into
+   effectively-once processing.
+4. **Two agent tracks, one router.** `code_reviewer → test_gen` for pull requests,
+   `ci_monitor → fix_agent → fix_verifier` for failing checks.
+5. **The sandbox is disposable.** `fix_verifier` applies the proposal to a snapshot
+   inside Docker with `--network none`, dropped capabilities and resource caps, then
+   re-runs the failing check before a human ever sees the patch.
+6. **Failure is bounded.** Attempts increment per job; past `AUTOPR_MAX_ATTEMPTS`
+   the job is parked `DEAD` with its last error instead of retried forever.
 
-- **PR review** (`event=pull_request`) — `code_reviewer` reads the changed files
-  and writes a review; `test_generator` drafts tests for the change; `router`
-  decides whether the review comment is safe to auto-post or needs approval.
-- **CI fix** (`event=check_run` / `workflow_run`) — `ci_monitor` classifies the
-  failure; `fix_agent` proposes a patch; `fix_verifier` applies it to a snapshot
-  of the repo **inside an isolated Docker sandbox** (`--network none`, dropped
-  capabilities, resource caps) and re-runs the failing check. A fix is only ever
-  *proposed* to a human — a verified patch is still human-gated, always.
+## Design decisions
 
----
+Each of these has an ADR under [`docs/decisions/`](docs/decisions) — thirteen in
+total, written when the decision was made, not after.
 
-## Safety invariants (the part that matters)
-
-These hold regardless of configuration, risk score, or model output:
-
-1. **Dry-run by default.** `AUTOPR_GITHUB_DRY_RUN=true` out of the box. The GitHub
-   client records the action it *would* take and touches nothing. You must
-   deliberately opt into live posting.
-2. **Every code-changing action is human-gated.** A proposed fix — even one the
-   sandbox verified as passing — is written to the approval queue as `PENDING`
-   and applied only when a human approves. No agent, no risk score, and no config
-   flag can auto-apply code.
-3. **Only ≤ low-risk *comments* auto-post.** The ceiling is
-   `AUTOPR_AUTO_COMMENT_MAX_RISK` (default `low`). Unknown/unparseable risk ranks
-   as high and fails closed to the human queue.
-4. **The webhook is authenticated.** Every delivery is HMAC-verified against
-   `AUTOPR_WEBHOOK_SECRET` in constant time; the app **refuses to start** on the
-   shipped placeholder secret unless `AUTOPR_ALLOW_INSECURE=1` (local/dev/tests).
-5. **The write API is authenticated.** `approve`/`reject` require a bearer token
-   (constant-time compared) whenever `AUTOPR_API_TOKEN` is set, and every approval
-   emits an `audit.*` log line (actor IP, decision, action, outcome).
-6. **Secrets never enter the image or the repo.** `.env` is gitignored; Compose
-   and Fly inject secrets at runtime. The Groq API key lives only in `.env`.
-
----
-
-## Engineering highlights
-
-| Concern | How AutoPR handles it |
-| --- | --- |
-| **Exactly-once processing** | A `job_results` ledger keyed by `job_id` with `INSERT … ON CONFLICT DO NOTHING` (Postgres *and* SQLite). At-least-once delivery + an idempotent write = effectively-once. |
-| **Crash safety** | Redis Streams consumer group; a dead worker's un-acked entries are reclaimed via `XAUTOCLAIM`; `PENDING` rows are re-enqueued by a startup reconcile. |
-| **Bounded failure** | Each attempt increments `attempts`; past `AUTOPR_MAX_ATTEMPTS` the job is parked `DEAD` with its last error, never retried forever. |
-| **Graceful degradation** | Redis down → the webhook fails closed with **503** (GitHub retries), while the read-only dashboard keeps serving from the database. `/readyz` reports the truth. |
-| **Schema migrations** | Alembic, with one source of truth for the URL (`app.config`) and batch mode for SQLite. CI drives a real-Postgres up → down → up round-trip. |
-| **Observability** | structlog JSON from both processes; a `correlation_id` that rides contextvars in-process and the job payload across the queue; `/healthz` (liveness) vs `/readyz` (deep) vs `/metrics` (Prometheus). |
-| **Security perimeter** | Fail-fast secret validation, constant-time HMAC + bearer checks, per-IP rate limiting, a CORS allowlist, and audit logging on every write. |
-| **Typed end-to-end** | The React dashboard is TypeScript; its response models mirror the API serializers, so a field rename on either side is a compile error, not a runtime `undefined`. |
-
----
+1. **Streams over a task queue.** `BackgroundTasks` loses work on restart and has no
+   acknowledgement model. A consumer group plus a `job_results` ledger buys
+   redelivery, reclaim, and an audit trail for the price of one Redis instance.
+2. **Risk can only reduce autonomy.** A scoring function is a heuristic, and
+   heuristics are wrong in both directions. Wiring it so its only power is to
+   *withhold* action means a bad score degrades to "ask a human", never to "ship it".
+3. **Unparseable risk fails closed.** If the router cannot read the model's risk
+   output, the outcome goes to the human queue. A parse error is not evidence of safety.
+4. **Verify, then show.** The patch a human approves is the patch that already
+   compiled and passed the failing check in the sandbox — not a proposal that merely
+   reads well.
+5. **Boot-time refusal over silent insecurity.** The app will not start on the
+   shipped placeholder webhook secret unless `AUTOPR_ALLOW_INSECURE=1`, and an empty
+   API token logs a loud warning because it turns off the only write gate.
+6. **The dashboard reads the ledger.** No separate UI state to drift out of sync with
+   what the worker actually did.
 
 ## Quick start
 
-**Prerequisites:** Python 3.11 (via [uv](https://docs.astral.sh/uv/)), Node 20+.
-Docker Desktop only if you want the full Compose stack or the CI-fix sandbox.
-
-### 1. Run the backend (native, SQLite — zero infra)
+**Prerequisites:** Python 3.11 via [uv](https://docs.astral.sh/uv/), Node 20+. Docker
+Desktop only for the Compose stack or the CI-fix sandbox.
 
 ```bash
-# from the repo root
-uv sync --extra dev                     # create .venv from the committed uv.lock
-
-# SQLite + no external services; allow the dev placeholder secret
+# 1. backend, native, SQLite, zero infra
+uv sync --extra dev
 AUTOPR_ALLOW_INSECURE=1 AUTOPR_LOG_JSON=false \
   uv run uvicorn app.main:app --reload --port 8000
-```
+# http://localhost:8000/docs
 
-The API is now at `http://localhost:8000` (interactive docs at `/docs`). With no
-Redis running it logs `startup.queue_unavailable` and the webhook returns 503 —
-that's the designed degradation; the dashboard's read APIs work regardless.
+# 2. optional demo data (~10 jobs + a populated review queue); safe to re-run
+uv run python scripts/seed_demo.py
 
-### 2. Seed realistic demo data (optional but recommended)
+# 3. dashboard
+cd frontend && npm ci && npm run dev     # http://localhost:5173, proxies /api → :8000
 
-```bash
-uv run python scripts/seed_demo.py      # ~10 jobs + a populated review queue
-```
-
-Safe to re-run — it owns only the `acme/*` demo rows and leaves real data alone.
-
-### 3. Run the dashboard
-
-```bash
-cd frontend
-npm ci
-npm run dev                             # http://localhost:5173
-```
-
-The dev server proxies `/api/*` to the backend on `:8000`, so the browser stays
-same-origin. Open **http://localhost:5173** — Overview, Review Queue, and Jobs
-should all light up with the seeded data.
-
-### 4. (Alternative) The whole stack in Docker
-
-```bash
-cp .env.example .env
-# set AUTOPR_WEBHOOK_SECRET and AUTOPR_API_TOKEN (both required by Compose):
-#   python -c "import secrets; print(secrets.token_hex(32))"
+# 4. or the whole stack: Postgres, Redis, Qdrant, API, worker
+cp .env.example .env                     # set AUTOPR_WEBHOOK_SECRET + AUTOPR_API_TOKEN
 docker compose up --build
 ```
 
-Brings up Postgres, Redis, Qdrant, the API (which runs `alembic upgrade head`
-first), and the worker. See [`docs/operations.md`](docs/operations.md).
+With Redis absent the API logs `startup.queue_unavailable` and the webhook returns
+`503`: that is the designed degradation, and the read APIs keep working.
 
----
+Configuration is documented inline in [`.env.example`](.env.example). The two values
+that matter are the webhook secret (HMAC) and `AUTOPR_API_TOKEN` (the write gate).
 
 ## Tests
 
-The backend suite is **hermetic** — in-memory SQLite, `fakeredis`, and a mocked
-LLM — so it runs fully offline and fast:
-
 ```bash
-uv run pytest -q                                    # all backend tests
-uv run pytest --cov=app --cov-report=term-missing   # with coverage
+uv run pytest            # backend: ingest, policy, store, sandbox, graph
+cd frontend && npm test  # vitest: api client, error boundary
 ```
 
-```bash
-cd frontend && npm test                             # Vitest + React Testing Library
-```
+CI runs both on every push (`.github/workflows/ci.yml`), plus a lint/format gate.
 
-CI (`.github/workflows/ci.yml`) additionally runs ruff, mypy, a coverage gate, a
-real-Postgres Alembic round-trip, the frontend lint/type/test/build, and a
-build of both container images.
+## Limits
 
----
+- **Never pointed at a repository with real traffic.** Retry, dead-letter and approval
+  paths are exercised by tests and by a sandbox that only ever sees synthetic patches.
+- **Single-container sandbox.** One patch at a time per job; no isolation between
+  concurrent verifications beyond Docker's own.
+- **No summarisation agent.** The graph is `code_reviewer`, `test_gen`, `ci_monitor`,
+  `fix_agent`, `fix_verifier`, `router` — nothing else. Long histories are truncated
+  by the agent layer rather than compressed by a dedicated one.
 
-## Configuration
+## Docs
 
-Every setting is an `AUTOPR_`-prefixed environment variable (see
-[`.env.example`](.env.example) and [`app/config.py`](app/config.py)). The ones
-you're most likely to touch:
+- [`docs/architecture.md`](docs/architecture.md) — component map and data flow
+- [`docs/decisions/`](docs/decisions) — thirteen ADRs, one per phase
+- [`docs/api.md`](docs/api.md) — endpoints and auth
+- [`docs/operations.md`](docs/operations.md) — deploy, backup, troubleshooting
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `AUTOPR_WEBHOOK_SECRET` | *(placeholder)* | HMAC secret for GitHub deliveries. App refuses to start on the placeholder unless `AUTOPR_ALLOW_INSECURE=1`. |
-| `AUTOPR_API_TOKEN` | *(empty)* | Bearer token for `approve`/`reject`. Empty = unauthenticated dev no-op (with a loud warning). |
-| `AUTOPR_DATABASE_URL` | `sqlite+pysqlite:///./autopr.db` | SQLite locally; a `postgresql+psycopg://…` URL in Compose/cloud. |
-| `AUTOPR_REDIS_URL` | `redis://localhost:6379/0` | Queue backend. |
-| `AUTOPR_GITHUB_DRY_RUN` | `true` | Master safety switch. `true` = touch nothing. |
-| `AUTOPR_GITHUB_TOKEN` | *(empty)* | Enables live GitHub reads/writes. Only meaningful with dry-run off. |
-| `AUTOPR_GROQ_API_KEY` | *(empty)* | Powers the LLM agents (Llama via Groq). Kept only in `.env`. |
-| `AUTOPR_CORS_ORIGINS` | local dev origins | Comma-separated allowlist for the dashboard origin. |
+## Author
 
----
+**Mohd Ayaan** — [github.com/sheikhayaan](https://github.com/sheikhayaan) ·
+[LinkedIn](https://linkedin.com/in/mohd-ayaan-7731b4381)
 
-## Project layout
-
-```
-app/
-  main.py            FastAPI: /webhook + human-in-the-loop ops API + dashboard reads
-  worker.py          Redis-Streams consumer: reclaim, reconcile, drive the graph
-  ingest.py          idempotent persist + enqueue (the exactly-once write)
-  queue.py           Redis Streams client (consumer groups, PEL, XAUTOCLAIM)
-  db.py              SQLAlchemy engine, SQLite WAL pragmas, ON CONFLICT helper
-  models.py          PRJob, JobResult (ledger), ReviewDecision + status enums
-  config.py          pydantic-settings; fail-fast secret validation
-  security.py        constant-time HMAC + bearer verification
-  ratelimit.py       in-process per-IP fixed-window limiter
-  observability.py   structlog config, correlation id, Prometheus collectors
-  agents/            LangGraph graph + nodes (code_reviewer, ci_monitor, fix_agent, …)
-  routing/           policy.route() disposition, dry-run GitHub client, approval store
-  sandbox/           isolated Docker fix-verification (runner, verifier, policy)
-alembic/             migration env + versioned schema
-frontend/            React 18 + TypeScript + Vite operator dashboard
-docs/                architecture, operations runbook, API reference, decision logs
-tests/               25 hermetic test modules (SQLite + fakeredis + mocked LLM)
-```
-
----
-
-## Documentation
-
-- **[Architecture](docs/architecture.md)** — components, data flow, both tracks, the exactly-once and human-gating mechanics.
-- **[Operations runbook](docs/operations.md)** — deploy, scale workers, rotate secrets, migrate, observe, and what degrades when a dependency dies.
-- **[API reference](docs/api.md)** — every endpoint, auth, and `curl` examples.
-- **[Decision logs](docs/decisions/)** — one ADR per phase: the choice made, the alternative rejected, and the corners deliberately cut.
-
----
-
-## License
-
-[MIT](LICENSE).
+MIT licensed. See [LICENSE](LICENSE).
