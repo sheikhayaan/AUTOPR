@@ -40,3 +40,7 @@ Thumbs.db
 # Data / volumes
 pgdata/
 qdrant_storage/
+
+# local dev server logs
+frontend/*.log
+vite.out.log

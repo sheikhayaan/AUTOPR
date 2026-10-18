@@ -68,6 +68,13 @@ services:
       AUTOPR_API_TOKEN: ${AUTOPR_API_TOKEN:?set AUTOPR_API_TOKEN in .env}
       AUTOPR_CORS_ORIGINS: ${AUTOPR_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
+      # Safety posture, passed through explicitly so the stack can never run in a
+      # posture other than the one in .env: hand-off mode (no write credential),
+      # the GitHub write toggle, and the auto-post risk ceiling.
+      AUTOPR_HANDOFF_MODE: ${AUTOPR_HANDOFF_MODE:-false}
+      AUTOPR_GITHUB_DRY_RUN: ${AUTOPR_GITHUB_DRY_RUN:-true}
+      AUTOPR_GITHUB_TOKEN: ${AUTOPR_GITHUB_TOKEN:-}
+      AUTOPR_AUTO_COMMENT_MAX_RISK: ${AUTOPR_AUTO_COMMENT_MAX_RISK:-low}
     ports:
       - "8000:8000"
     # Migrations run here (only) as a release step, before serving. A single
@@ -110,6 +117,18 @@ services:
       # secret to pass the fail-fast validator. Groq key powers the LLM agents.
       AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:?set AUTOPR_WEBHOOK_SECRET in .env}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
+      AUTOPR_HANDOFF_MODE: ${AUTOPR_HANDOFF_MODE:-false}
+      AUTOPR_GITHUB_DRY_RUN: ${AUTOPR_GITHUB_DRY_RUN:-true}
+      AUTOPR_GITHUB_TOKEN: ${AUTOPR_GITHUB_TOKEN:-}
+      # Snapshot + sandbox budgets matter most here: the worker is the process
+      # that materializes the repo tree and runs the container.
+      AUTOPR_MAX_ATTEMPTS: ${AUTOPR_MAX_ATTEMPTS:-5}
+      AUTOPR_RECLAIM_IDLE_MS: ${AUTOPR_RECLAIM_IDLE_MS:-900000}
+      AUTOPR_RECONCILE_INTERVAL_S: ${AUTOPR_RECONCILE_INTERVAL_S:-60}
+      AUTOPR_SANDBOX_IMAGE: ${AUTOPR_SANDBOX_IMAGE:-autopr-sandbox:latest}
+      AUTOPR_SANDBOX_TIMEOUT_S: ${AUTOPR_SANDBOX_TIMEOUT_S:-120}
+      AUTOPR_SNAPSHOT_MAX_TOTAL_BYTES: ${AUTOPR_SNAPSHOT_MAX_TOTAL_BYTES:-25000000}
+      AUTOPR_SNAPSHOT_MAX_TARBALL_BYTES: ${AUTOPR_SNAPSHOT_MAX_TARBALL_BYTES:-100000000}
     command: ["python", "-m", "app.worker"]
     # The worker spawns the fix-verification sandbox via `docker run` (Phase 3),
     # so it needs the host Docker socket (docker-out-of-docker). Safe for a

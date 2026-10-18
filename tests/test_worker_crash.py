@@ -99,17 +99,24 @@ def test_retries_capped_then_escalated(Session, queue, sample_payload):
     def always_fails(session, job):
         raise RuntimeError("boom")
 
-    # Drive it past max_attempts. process_job increments attempts each call;
-    # once attempts > max_attempts it flips to DEAD before running the handler.
+    # Drive it to the retry cap. `max_attempts` means exactly that many
+    # executions: attempt N runs the handler, delivery N+1 escalates to DEAD
+    # without running it.
     dbx = Session()
-    for _ in range(settings.max_attempts + 1):
+    for _ in range(settings.max_attempts):
         try:
             process_job(dbx, job_id, handler=always_fails)
         except RuntimeError:
             dbx.rollback()  # simulate the worker's retry loop leaving it pending
     job = dbx.get(PRJob, job_id)
+    assert job.attempts == settings.max_attempts
+    assert job.status != JobStatus.DEAD  # not yet escalated: the runs are done
+
+    # One more delivery escalates instead of running the handler again.
+    assert process_job(dbx, job_id, handler=always_fails) is True
+    job = dbx.get(PRJob, job_id)
     assert job.status == JobStatus.DEAD
-    assert job.attempts > settings.max_attempts
+    assert job.attempts == settings.max_attempts  # no phantom extra attempt
     dbx.close()
 
 

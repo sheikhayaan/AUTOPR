@@ -131,3 +131,27 @@ def test_ping_event_ignored(client):
     resp = client.post("/webhook", content=body, headers=headers)
     assert resp.status_code == 200
     assert resp.json()["status"] == "ignored"
+
+
+def test_oversized_body_is_rejected_before_signature_check(client, monkeypatch):
+    """An unsigned caller must not be able to make us buffer an arbitrary body.
+
+    The rate limiter bounds request count, not size, so the cap is enforced while
+    reading. It fires before HMAC verification by design: the point is to refuse
+    the allocation, and we cannot authenticate bytes we refuse to read.
+    """
+    monkeypatch.setattr(settings, "max_webhook_bytes", 1_024, raising=False)
+    body = b'{"x": "' + b"a" * 2_000 + b'"}'
+    resp = client.post("/webhook", content=body, headers={"X-GitHub-Event": "pull_request"})
+    assert resp.status_code == 413
+
+
+def test_body_at_the_limit_is_accepted(client, monkeypatch):
+    monkeypatch.setattr(settings, "max_webhook_bytes", 1_024, raising=False)
+    body = json.dumps({"zen": "hello"}).encode()
+    assert len(body) <= 1_024
+    headers = {
+        "X-Hub-Signature-256": compute_signature(settings.webhook_secret, body),
+        "X-GitHub-Event": "ping",
+    }
+    assert client.post("/webhook", content=body, headers=headers).status_code == 200

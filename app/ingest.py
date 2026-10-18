@@ -5,25 +5,39 @@ directly and reused by the crash-reconcile logic.
 
 The two-step "insert row, then enqueue" has a crash window: what if the process
 dies after the INSERT commits but before the XADD? The row would sit forever in
-PENDING and never be worked. We close that window with a reconcile pass on
-worker startup (see worker.reconcile_pending) that re-enqueues any PENDING/
-QUEUED jobs. This is a lightweight transactional-outbox pattern: Postgres is the
-source of truth for "this job exists", Redis is just the delivery mechanism.
+PENDING and never be worked. We close that window from three sides:
+  * a failed publish is recorded on the row (`last_error`) and repaired when
+    GitHub retries the delivery (see the duplicate branch of `ingest`);
+  * the worker runs `reconcile_pending` at startup AND on an interval, which
+    re-publishes any PENDING row;
+  * re-publishing is harmless, because the worker is idempotent.
+This is a lightweight transactional-outbox pattern: Postgres is the source of
+truth for "this job exists", Redis is just the delivery mechanism.
 """
 
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import CursorResult, select
+if TYPE_CHECKING:  # pragma: no cover
+    from sqlalchemy.engine import CursorResult
+
+import structlog
+from redis.exceptions import RedisError
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.db import insert_ignore_duplicates, supports_insert_returning
+from app.db import execute_for_rowcount, insert_ignore_duplicates, supports_insert_returning
 from app.models import JobStatus, PRJob
 from app.observability import current_correlation_id
 from app.queue import JobQueue
+
+log = structlog.get_logger()
+# Stamped on a job row when the XADD raised. Used to tell "this PENDING row was
+# never enqueued" apart from "another request is enqueueing it right now".
+_PUBLISH_FAILED_PREFIX = "publish failed"
 
 
 @dataclass(frozen=True)
@@ -205,14 +219,20 @@ def ingest(session: Session, queue: JobQueue, payload: PRPayload) -> IngestResul
 
     Steps:
       1. INSERT ... ON CONFLICT DO NOTHING on dedup_key.
-      2. Look up the row. If *we* created it (rowcount==1), XADD and mark
-         QUEUED. If it already existed, we do nothing further — this is the
-         duplicate-delivery no-op.
+      2. Look up the row. If *we* created it, claim + XADD it
+         (`claim_and_publish`). If it already existed, that is normally the
+         duplicate-delivery no-op — UNLESS the row is still PENDING, which means
+         it was committed but never confirmed on the stream (a failed publish, or
+         a crash in that window). That is the exact state a GitHub retry lands in
+         after a Redis blip, so the retry repairs it rather than leaving it for
+         the worker's next reconcile pass.
 
     Concurrency: if two requests race for the same head SHA, the unique
     constraint on dedup_key guarantees exactly one INSERT commits; the loser's
     statement is suppressed and its `created` is False. Only the winner
-    enqueues, so there is exactly one stream message per PR head SHA.
+    enqueues, so there is exactly one stream message per PR head SHA — and
+    publishing is itself a compare-and-set (`claim_and_publish`), so even a
+    repair path cannot double-publish.
 
     This assumes each caller has its own connection (one Session per request,
     as in the API and the worker). Two sessions sharing a single connection
@@ -254,22 +274,72 @@ def ingest(session: Session, queue: JobQueue, payload: PRPayload) -> IngestResul
     job = session.execute(select(PRJob).where(PRJob.dedup_key == payload.dedup_key)).scalar_one()
 
     if not created:
-        # Duplicate or race-loser: someone else owns enqueueing this job.
+        # Duplicate or race-loser. Normally a pure no-op — but a row still in
+        # PENDING means it was never confirmed on the stream (a previous publish
+        # failed, or the process died between the INSERT commit and the XADD), so
+        # this delivery repairs it. Publishing is gated by `claim_and_publish`'s
+        # compare-and-set, so the repair cannot double-publish a job that another
+        # in-flight delivery is enqueueing at the same moment.
+        if job.status == JobStatus.PENDING and claim_and_publish(session, queue, job):
+            log.info("ingest.republished_stranded", job_id=job.id)
         return IngestResult(job_id=job.id, created=False)
 
-    msg_id = queue.publish(
-        {
-            "job_id": job.id,
-            "repo": payload.repo,
-            "pr_number": payload.pr_number,
-            "commit_sha": payload.commit_sha,
-            # Carry the API request's trace id into the worker. Empty string (not
-            # omitted) so the Redis stream field set is stable; the worker treats
-            # "" as "mint a fresh one".
-            "correlation_id": current_correlation_id() or "",
-        }
-    )
-    job.stream_msg_id = msg_id
-    job.status = JobStatus.QUEUED
-    session.commit()
+    claim_and_publish(session, queue, job)
     return IngestResult(job_id=job.id, created=True)
+
+
+def claim_and_publish(
+    session: Session, queue: JobQueue, job: PRJob, *, correlation_id: str | None = None
+) -> bool:
+    """Atomically claim the right to publish this job, then XADD it.
+
+    The claim is a conditional UPDATE (PENDING -> QUEUED). Exactly one caller can
+    win it, which is what makes publishing exactly-once *regardless of who won
+    the INSERT*: a race-loser that sees the row PENDING and a creator that has
+    not published yet cannot both reach the stream.
+
+    On a Redis failure the claim is released (back to PENDING) and the error is
+    recorded on the row, so a GitHub retry — or the worker's periodic reconcile —
+    can pick it up. The exception is re-raised so the webhook can answer 503 and
+    GitHub retries instead of dropping the event.
+    """
+    claimed = (
+        execute_for_rowcount(
+            session,
+            update(PRJob)
+            .where(PRJob.id == job.id, PRJob.status == JobStatus.PENDING)
+            .values(status=JobStatus.QUEUED),
+        )
+        > 0
+    )
+    session.commit()
+    if not claimed:
+        return False
+    # The conditional UPDATE bypassed the ORM, so resync the instance: without
+    # this the unit of work still believes status is PENDING and would skip the
+    # release-to-PENDING UPDATE in the failure branch below.
+    session.refresh(job)
+
+    try:
+        msg_id = queue.publish(
+            {
+                "job_id": job.id,
+                "repo": job.repo,
+                "pr_number": job.pr_number,
+                "commit_sha": job.commit_sha,
+                # Carry the API request's trace id into the worker. Empty string
+                # (not omitted) so the Redis stream field set is stable; the
+                # worker treats "" as "mint a fresh one".
+                "correlation_id": correlation_id or current_correlation_id() or "",
+            }
+        )
+    except RedisError as exc:
+        job.status = JobStatus.PENDING
+        job.last_error = f"{_PUBLISH_FAILED_PREFIX}: {exc!r}"
+        session.commit()
+        raise
+
+    job.stream_msg_id = msg_id
+    job.last_error = None
+    session.commit()
+    return True

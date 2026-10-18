@@ -23,7 +23,7 @@ so the Overview distributions, the Review Queue, and the Jobs table all light up
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Allow running as `python scripts/seed_demo.py` from the repo root.
@@ -42,7 +42,7 @@ from app.models import (  # noqa: E402
 )
 
 DEMO_ORG = "acme/"
-NOW = datetime.now(timezone.utc)
+NOW = datetime.now(UTC)
 
 
 def ago(**kw) -> datetime:
@@ -342,7 +342,9 @@ JOBS = [
         JobStatus.DONE,
         event="check_run",
         created=ago(minutes=4),
-        summary="ci-fix pr acme/checkout-service#512: failure=test verified=True action=propose_fix",
+        summary=(
+            "ci-fix pr acme/checkout-service#512: failure=test verified=True action=propose_fix"
+        ),
     ),
     job(
         "acme/notifications",
@@ -352,7 +354,9 @@ JOBS = [
         JobStatus.DONE,
         event="workflow_run",
         created=ago(minutes=9),
-        summary="ci-fix pr acme/notifications#143: failure=dependency verified=False action=escalate",
+        summary=(
+            "ci-fix pr acme/notifications#143: failure=dependency verified=False action=escalate"
+        ),
     ),
 ]
 

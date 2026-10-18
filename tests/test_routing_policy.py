@@ -59,6 +59,40 @@ def test_review_body_contains_findings_and_risk():
     assert "high" in d.body
 
 
+# --- Test Generator output reaches the operator (wire, don't hoard) ----------
+def test_review_body_carries_the_draft_tests():
+    """`test_generator` runs on every PR-open run; its output must be visible."""
+    state = _pr_state("low")
+    state["generated_tests"] = "def test_foo():\n    assert foo() == 1\n"
+    body = route(state).body
+    assert "Suggested tests" in body
+    assert "def test_foo():" in body
+    assert "```python" in body  # fenced as code, never raw HTML
+    assert "not executed" in body  # never overclaim that they pass
+
+
+def test_review_body_without_tests_has_no_empty_section():
+    body = route(_pr_state("low")).body
+    assert "Suggested tests" not in body
+
+
+def test_review_body_truncates_a_runaway_test_draft():
+    state = _pr_state("low")
+    state["generated_tests"] = "x = 1\n" * 2_000  # ~12k chars
+    body = route(state).body
+    assert "truncated" in body
+    assert len(body) < 6_000
+    # The note must not point at a copy that does not exist: the comment body is
+    # the only persisted form of the draft.
+    assert "job result" not in body
+
+
+def test_draft_tests_are_only_on_the_pr_track():
+    # The CI track's body is a patch/escalation; a test draft there would be noise.
+    d = route(_ci_state(fix_verified=True, generated_tests="def test_x(): pass"))
+    assert "Suggested tests" not in d.body
+
+
 # --- CI-failure track: verified fix is ALWAYS gated --------------------------
 def _ci_state(**over) -> dict:
     base = {

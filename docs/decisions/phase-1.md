@@ -38,17 +38,9 @@ library is the wrong trade.
 
 **Chosen.** A `dedup_key = sha256(event|repo|pr|head_sha)` column with a UNIQUE
 constraint. Ingestion does `INSERT ... ON CONFLICT (dedup_key) DO NOTHING`,
-then reads back the row. Only the request that actually inserted the row
-proceeds to `XADD`. Duplicates and race-losers get `created=False` and enqueue
-nothing.
-
-**How "actually inserted" is decided.** The insert asks for `RETURNING id`: a
-suppressed conflict yields zero rows, so the answer is the arbitration decision
-itself rather than something inferred afterwards. On SQLite older than 3.35
-(no `RETURNING`) it falls back to `rowcount == 1`. The original note said
-`rowcount`; that is a mutable property of the cursor, valid only while the
-cursor is open, and it misreported under a shared connection. See the
-addendum at the end of this document.
+then reads back the row. Only the request that actually inserted the row (i.e.
+`rowcount == 1`) proceeds to `XADD`. Duplicates and race-losers get
+`created=False` and enqueue nothing.
 
 **Why.** This makes idempotency a property enforced by the database under
 concurrency, not by hopeful application logic. Two webhooks racing for the same
@@ -92,14 +84,29 @@ or double it. The ledger decouples correctness from ack timing.
 ## 4. Reconcile pass for the `INSERT → XADD` crash window
 
 **Chosen.** The ingest path commits the row (`PENDING`) *then* `XADD`s (→
-`QUEUED`). If the process dies between those, the row is stranded in `PENDING`
-with nothing on the stream. On startup the worker runs `reconcile_pending`,
-which re-publishes any `PENDING` job. Idempotent processing makes re-publishing
-safe.
+`QUEUED`). If the process dies between those, or if the `XADD` itself fails (the
+webhook answers `503` so GitHub retries), the row is stranded in `PENDING` with
+nothing on the stream. Three things close that window:
+
+1. **Repair on redelivery.** The duplicate branch of `ingest` is normally a
+   no-op, but if the row it found is still `PENDING` it publishes it. A GitHub
+   retry therefore heals the job immediately instead of waiting for a restart.
+2. **Periodic reconcile.** The worker runs `reconcile_pending` at startup *and*
+   every `reconcile_interval_s` (60s), so a stranded row whose retry never
+   arrives is repaired within a minute.
+3. **Compare-and-set publication.** `claim_and_publish` flips `PENDING → QUEUED`
+   with a conditional `UPDATE` and only the winner `XADD`s. Without it, (1) and
+   (2) racing a live delivery could publish the same job twice — harmless for
+   correctness (the worker is idempotent) but it would make "exactly one stream
+   message per job" untrue and muddy the `QUEUED` bookkeeping.
 
 **Why.** This is a lightweight **transactional-outbox** pattern: Postgres is
 the source of truth for "this job exists"; Redis is only the delivery channel.
-The reconcile closes the one gap where the two could disagree.
+The reconcile closes the one gap where the two could disagree. Note the
+asymmetry: only `PENDING` rows are swept. `QUEUED` rows were confirmed on the
+stream, and a message merely in flight (or sitting in another consumer's PEL)
+must not be published again — that case belongs to `XAUTOCLAIM`, which is the
+mechanism built for it.
 
 **Rejected — full outbox with a relay table + poller.** More robust for very
 high throughput but heavier than this project needs at Phase 1. Flagged as the
@@ -110,10 +117,13 @@ complexity far beyond the requirement.
 
 ## 5. Bounded retries → `DEAD` (human queue), not infinite retry
 
-**Chosen.** `attempts` increments per try; once it exceeds `max_attempts`
-(default 5) the job flips to `DEAD` and is acked (stops being redelivered). The
-spec's "cap retries and escalate to human queue" — `DEAD` *is* that queue
-(query `WHERE status = 'dead'`).
+**Chosen.** `attempts` counts *executions*. Before running the handler, the
+worker checks `attempts >= max_attempts` (default 5) and, if hit, flips the job
+to `DEAD` and acks it (stops being redelivered). So `max_attempts` means exactly
+that many runs — the earlier `attempts > max_attempts` check (increment first,
+then compare) silently allowed one extra execution. The spec's "cap retries and
+escalate to human queue" — `DEAD` *is* that queue (query
+`WHERE status = 'dead'`).
 
 **Rejected — retry forever.** A poison message (malformed payload, permanent
 downstream failure) would loop indefinitely, burning the worker and, in later
@@ -142,12 +152,16 @@ they are scope boundaries for Phase 1.
    installed on the dev machine yet (agreed to defer). The application code is
    datastore-agnostic except one branch (`app/db.insert_ignore_duplicates`) that
    picks the SQLAlchemy dialect construct. **Fidelity gaps to state aloud:**
-   - The concurrency test uses a file-backed SQLite DB with one connection per
-     thread and `BEGIN IMMEDIATE`, so the unique index genuinely arbitrates
-     between two connections. It still does **not** reproduce true Postgres
-     row-lock contention: SQLite serialises writers on a single lock. On
-     Postgres the same `ON CONFLICT` path holds; the guarantee is the
-     constraint, not the engine.
+   - The concurrency test uses SQLite, so writes are serialised: it proves the
+     *constraint-driven dedup logic* but does **not** reproduce true Postgres
+     row-lock contention. It gives each thread its own connection (a file DB in
+     `tmp_path`) so that `rowcount` is per-statement, as it would be in
+     production; with the shared `StaticPool` connection used elsewhere in the
+     suite, `rowcount` reflects whichever statement last touched the connection
+     and both threads can read the same value. That is a harness artifact, not
+     app behaviour — the guarantee itself lives on the unique constraint and the
+     `claim_and_publish` compare-and-set, never on the `created` boolean. On
+     Postgres the same `ON CONFLICT` path holds.
    - fakeredis implements the stream commands we use
      (`XADD/XREADGROUP/XACK/XAUTOCLAIM/XPENDING`) but is not byte-for-byte Redis.
      The crash test asserts on *observable behaviour* (PEL count, redelivery,
@@ -167,9 +181,19 @@ they are scope boundaries for Phase 1.
    reaper process. Simpler and correct for a handful of workers; at large scale
    a single reaper (or per-worker jitter) avoids redundant reclaim scans.
 
-4. **Reclaim idle threshold is a fixed config value (30s).** A real deployment
-   would tune this against actual job duration; too low re-runs slow-but-alive
-   jobs, too high delays recovery.
+4. **Reclaim idle threshold is a fixed config value (15 min by default).** A real
+   deployment would tune this against actual job duration; too low re-runs
+   slow-but-alive jobs, too high delays recovery. Worst case here is roughly
+   4 graph nodes x (1 + retries) LLM calls x `llm_timeout_s`, plus one sandbox
+   run at `sandbox_timeout_s`, plus network slack — about 8 minutes with the
+   defaults — so 15 minutes leaves margin. The worker logs a
+   `worker.reclaim_window_may_be_short` warning if the configured window dips
+   below 5 minutes. A heartbeat/lease (`XCLAIM` refresh while a job runs) is the
+   rigorous fix and would make the window irrelevant; deferred as scope.
+   Note the honest consequence: with more than one worker and no lease, a job
+   that genuinely exceeds the window can still be reclaimed and run
+   concurrently. The dedup ledger plus the job_results unique key mean the
+   *side effects* still can't double-apply, but the duplicate LLM spend is real.
 
 5. **No auth/rate-limiting on `/webhook` beyond the HMAC.** HMAC is the security
    boundary GitHub gives us; a public deployment would add IP allow-listing and
@@ -178,38 +202,3 @@ they are scope boundaries for Phase 1.
 6. **Worker "work" is a placeholder** (`default_handler`). Phase 2 replaces it
    with the LangGraph pipeline. The exactly-once machinery around it is real; the
    thing it wraps is a stub by design at this phase.
-
----
-
-## Addendum — the race test was lying, and the fix
-
-**Found.** `tests/test_idempotency.py::test_concurrent_same_pr_creates_one_job`
-failed intermittently in CI (~10% locally over 40 runs) in *both* directions:
-`[True, True]` and `[False, False]`. Two winners would mean two enqueues.
-
-**Cause was the harness, not `ingest`.** The shared `engine` fixture uses
-`StaticPool`, which hands *both* threads the same DBAPI connection. Two sessions
-on one connection share one transaction, so the first `commit()` ends the second
-thread's transaction and closes its cursors — and `rowcount` is read *after* the
-commit. `ON CONFLICT` had nothing to arbitrate between, because there were never
-two transactions. The test asserted a property its harness could not observe.
-
-**Fixed, two parts.**
-
-1. `race_engine` fixture: on-disk SQLite, `NullPool` (one connection per thread),
-   `timeout=15`, and a `begin` hook issuing `BEGIN IMMEDIATE` so the second
-   writer waits on the lock instead of deadlocking — the shape of Postgres
-   blocking on a conflicting unique index. The test now releases both threads
-   through a `Barrier` and additionally asserts the loser sees the winner's row
-   already `QUEUED`, which a bare boolean cannot express.
-2. `ingest` decides `created` from `INSERT ... RETURNING id` where the dialect
-   supports it, falling back to `rowcount`. The arbitration result is read
-   before `commit()`.
-
-**Result.** 60/60 consecutive runs of the race test pass; full suite 217 passed,
-2 skipped; coverage 84.2%, gate 78%.
-
-**Scope of the guarantee.** `ingest` requires one connection per caller — one
-`Session` per request, which is what the API and worker do. If two sessions ever
-share a connection, no `ON CONFLICT` can arbitrate and the invariant is void.
-That is now stated in the `ingest` docstring rather than assumed.

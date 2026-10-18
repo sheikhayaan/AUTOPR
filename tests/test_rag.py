@@ -92,3 +92,64 @@ def test_ingest_is_idempotent(rag):
     assert n1 == n2
     info = rag.client.get_collection("test_repo")
     assert info.points_count == n1
+
+
+# --- repo scoping (one collection, many repos) -------------------------------
+# The worker indexes several repositories into one collection, so retrieval must
+# never answer a question about repo A with repo B's code. The scope is a
+# contextvar set by the worker around `graph.invoke`; these tests pin both halves.
+
+
+def test_retrieve_is_scoped_to_the_grounding_repo(rag):
+    with rag_mod.grounding_scope("acme/api"):
+        rag.ingest_repo([("auth.py", "def login(user, password): validate_credentials(user)")])
+    with rag_mod.grounding_scope("acme/web"):
+        rag.ingest_repo([("render.py", "def render(view): return template(view)")])
+
+    query = "def login(user, password): validate_credentials(user)"
+    with rag_mod.grounding_scope("acme/api"):
+        hits = rag.retrieve(query, top_k=5)
+    assert [h["file_path"] for h in hits] == ["auth.py"]
+    assert all(h["repo"] == "acme/api" for h in hits)
+
+    # Same query, other repo: its own chunks only (no cross-repo leak).
+    with rag_mod.grounding_scope("acme/web"):
+        assert [h["file_path"] for h in rag.retrieve(query, top_k=5)] == ["render.py"]
+
+    # A repo we never indexed retrieves nothing rather than another repo's code.
+    with rag_mod.grounding_scope("acme/unknown"):
+        assert rag.retrieve(query, top_k=5) == []
+
+
+def test_scope_is_reset_after_the_block(rag):
+    with rag_mod.grounding_scope("acme/api"):
+        assert rag_mod._current_repo.get() == "acme/api"
+    assert rag_mod._current_repo.get() is None
+
+
+def test_unscoped_retrieve_stays_unfiltered(rag):
+    # Back-compat: a single-repo deployment (or a test) that never sets a scope
+    # keeps the pre-scoping behaviour instead of suddenly retrieving nothing.
+    rag.ingest_repo([("auth.py", "def login(user, password): validate_credentials(user)")])
+    assert len(rag.retrieve("def login(user, password): validate_credentials(user)", top_k=1)) == 1
+
+
+def test_build_rag_returns_none_when_the_store_cannot_be_built(monkeypatch):
+    """Grounding is an enhancement: an unreachable Qdrant must not stop the worker."""
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(rag_mod, "RepoRAG", _boom)
+    assert rag_mod.build_rag("http://qdrant:6333") is None
+
+
+def test_build_rag_returns_a_store_when_it_can(monkeypatch):
+    class _StubEmbed:
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(rag_mod, "TextEmbedding", _StubEmbed)
+    monkeypatch.setattr(rag_mod, "QdrantClient", lambda *a, **k: QdrantClient(":memory:"))
+    store = rag_mod.build_rag("http://ignored:6333", collection_name="built")
+    assert store is not None and store.collection == "built"

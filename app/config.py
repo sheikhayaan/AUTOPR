@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     stream_name: str = "autopr:jobs"
     consumer_group: str = "autopr-workers"
 
+    # --- Ingress limits ---
+    # Largest webhook body we will buffer. GitHub caps deliveries at 25 MB; we
+    # reject above 10 MB before the HMAC check so an unauthenticated caller
+    # cannot make us allocate arbitrary memory (the rate limiter bounds request
+    # *count*, not size).
+    max_webhook_bytes: int = 10_000_000
+
     # --- Observability (Phase 9) ---
     # JSON logs (one event per line) are the production default: greppable and
     # ready for a log pipeline. Flip to false locally for the colourised console
@@ -83,13 +90,33 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
 
     # --- Worker behaviour ---
+    # Hard cap on *executions* of one job. Attempts 1..N run the handler; delivery
+    # N+1 flips the job to DEAD (the human queue) without running it.
     max_attempts: int = 5
     # Entries idle longer than this (ms) in the pending list are considered
     # abandoned by a dead consumer and are reclaimed via XAUTOCLAIM.
-    reclaim_idle_ms: int = 30_000
+    #
+    # This MUST exceed the worst-case runtime of one job, or a second worker will
+    # reclaim (and concurrently re-run) a healthy-but-slow job. Worst case here is
+    # roughly: 4 graph nodes x (1 + retries) LLM calls x llm_timeout_s, plus one
+    # sandbox run at sandbox_timeout_s, plus network slack — ~8 minutes with the
+    # defaults. 15 minutes leaves margin. Heartbeats/leases would be the rigorous
+    # fix; a conservative idle window is the deliberate trade (see
+    # docs/decisions/phase-1.md corner #4).
+    reclaim_idle_ms: int = 900_000
+    # How often the worker re-runs `reconcile_pending` for jobs stranded between
+    # the DB commit and the XADD (a publish failure with a GitHub retry landing on
+    # the dedup key otherwise never enqueues them).
+    reconcile_interval_s: float = 60.0
 
     # --- Later phases (declared now so config is complete) ---
     qdrant_url: str = "http://localhost:6333"
+    # Ground the agents in retrieved repo context. Off by default: it needs the
+    # optional 'rag' extra (fastembed models) plus a reachable Qdrant, so an
+    # unconfigured deployment must not pay for it. When on, the worker indexes a
+    # repo snapshot once per (repo, sha) on the CI track and both the reviewer
+    # and the fix agent retrieve against it. See app/agents/rag.build_rag.
+    rag_enabled: bool = False
     groq_api_key: str = ""
     # Groq model id for all agents. Empty => the code default (llm.DEFAULT_MODEL).
     # Overridable via AUTOPR_LLM_MODEL since Groq's catalog changes over time.
@@ -151,6 +178,15 @@ class Settings(BaseSettings):
     # we stop collecting. See routing.github.HttpGitHubReader.snapshot_repo.
     snapshot_max_file_bytes: int = 1_000_000
     snapshot_max_files: int = 2_000
+    # Total decoded-text ceiling for one snapshot. The two caps above bound a
+    # single file and the file count, so their product (2 GB by default) was the
+    # real memory exposure: a repo of 2,000 x 1 MB files would be held in worker
+    # memory and carried inside the LangGraph state. This cap is the budget that
+    # actually matters — keep it well under the worker's memory limit.
+    snapshot_max_total_bytes: int = 25_000_000
+    # Ceiling on the *compressed* tarball download, enforced while streaming so a
+    # huge repo is rejected before it is buffered whole.
+    snapshot_max_tarball_bytes: int = 100_000_000
 
     @property
     def is_sqlite(self) -> bool:

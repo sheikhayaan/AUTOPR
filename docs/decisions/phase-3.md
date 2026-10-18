@@ -138,6 +138,50 @@ system whose credibility depends on not making bad changes autonomously.
 
 ---
 
+## 7. The human gate is sticky: one ledger row per action, first claim wins
+
+The central safety claim is "nothing changes code without a human, and an
+elevated-risk review is held." Two mechanisms make that hold under redelivery:
+
+**One row per `repo|pr|sha|action`.** The dedup key deliberately excludes the
+risk score and the disposition. Adding disposition (`…|gated` vs `…|auto`) looks
+safer but is *worse*: an earlier `medium` delivery would create a gated row and a
+later `low` delivery a second, auto row — the auto call posts immediately and the
+human then approves the gated row for the same action, so the PR gets the same
+comment twice. A single canonical row keeps the two paths arguing about one
+object instead of racing to create their own.
+
+**Whose row is it?** `store.enqueue_tracked` reports whether *this* delivery
+created the row, and the router treats the state as sticky:
+
+- `EXECUTED` → nobody acts again; both paths return `already_executed`.
+- `REJECTED` → the auto path refuses (`already_rejected`). A human said no;
+  non-deterministic model output must not resurrect it.
+- `PENDING` / `APPROVED` → the auto path refuses (`already_queued`). The policy is
+  re-evaluated on every delivery and the LLM is not deterministic, so the same
+  commit can score `low` on a redelivery and would otherwise post work an earlier
+  delivery escalated. This was a real, reproduced bypass.
+- `FAILED` → the *auto* path may retry (same auto decision, no side effect
+  landed). A gated delivery instead re-opens it to `PENDING`, because
+  `list_pending` only shows `PENDING` and a `FAILED` row would otherwise be
+  invisible in the queue and executed by nobody.
+
+**Approval is a compare-and-set, not a read-then-post.** `claim_approval` does a
+conditional `UPDATE ... WHERE status = 'PENDING'` (or `FAILED`, for a deliberate
+re-approval retry) and only the caller that changed a row proceeds to the GitHub
+call. A double-click, a retried request, or two operators therefore cannot post
+twice — the losers get `409 in progress`. `reject_pending` is the mirror CAS, so
+rejecting cannot flip a row out from under an approval that is mid-post. Because
+a crash between the claim and `mark_executed` would strand a row in `APPROVED`
+forever, the API sweeps `APPROVED → FAILED` at startup (nothing of ours is in
+flight at that instant), which makes the row operator-recoverable.
+
+The cost is that the gate's state machine is now explicit in one place
+(`app/routing/store.py`) instead of implied by read-then-write call sites. That is
+the point: the invariant is testable, and there is a test per transition.
+
+---
+
 ## Corners cut / simplifying assumptions — be ready to explain these
 
 Deliberate and known. None affect the correctness the tests prove; they are

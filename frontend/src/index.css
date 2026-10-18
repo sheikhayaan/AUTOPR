@@ -125,6 +125,13 @@
     @apply px-2.5 py-1.5 text-xs;
   }
 
+  /* Text field, used by the settings dialog and the history search boxes. */
+  .input {
+    @apply rounded-lg border border-line bg-surface-2 px-3 py-2 text-ink placeholder:text-ink-faint
+      transition-colors focus:border-brand-500/50 focus:outline-none focus-visible:ring-2
+      focus-visible:ring-brand-500/40;
+  }
+
   /* Skeleton shimmer. */
   .skeleton {
     @apply relative overflow-hidden rounded-md bg-white/[0.05];

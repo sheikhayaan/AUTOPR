@@ -1,7 +1,18 @@
+import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
-import { ActivityIcon, DashboardIcon, InboxIcon, LogoMark, ShieldIcon, BoltIcon } from './Icons'
+import SettingsDialog from './SettingsDialog'
+import {
+  ActivityIcon,
+  ClockIcon,
+  DashboardIcon,
+  InboxIcon,
+  LogoMark,
+  SettingsIcon,
+  ShieldIcon,
+  BoltIcon,
+} from './Icons'
 import type { IconComponent } from './Icons'
 import type { OutletContext, StatsConfig } from '../types'
 
@@ -16,6 +27,7 @@ interface NavItemDef {
 const NAV: NavItemDef[] = [
   { to: '/', label: 'Overview', icon: DashboardIcon, end: true },
   { to: '/reviews', label: 'Review Queue', icon: InboxIcon, badge: 'pending' },
+  { to: '/history', label: 'History', icon: ClockIcon },
   { to: '/jobs', label: 'Pipeline Jobs', icon: ActivityIcon },
 ]
 
@@ -90,6 +102,7 @@ function Brand() {
 export default function Layout() {
   const location = useLocation()
   const { data: stats, refreshing, updatedAt, reload } = usePolling(api.stats, 5000)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const pending = stats?.reviews?.pending ?? 0
   const config = stats?.config
 
@@ -116,6 +129,15 @@ export default function Layout() {
             <NavItem key={item.to} item={item} pending={pending} />
           ))}
         </nav>
+        {/* Token entry lives here because a 401 currently looks like an empty
+            dashboard: the operator needs an obvious place to fix credentials. */}
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="mb-2 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-ink-dim transition-colors hover:bg-white/[0.03] hover:text-ink"
+        >
+          <SettingsIcon className="h-[18px] w-[18px] text-ink-faint" />
+          <span className="flex-1 text-left">Settings</span>
+        </button>
         <ModeChip config={config} />
       </aside>
 
@@ -139,6 +161,13 @@ export default function Layout() {
               )}
             </NavLink>
           ))}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="relative rounded-lg p-2 text-ink-faint"
+            aria-label="Settings"
+          >
+            <SettingsIcon className="h-5 w-5" />
+          </button>
         </nav>
       </header>
 
@@ -148,6 +177,8 @@ export default function Layout() {
           <Outlet context={context} />
         </div>
       </main>
+
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   )
 }

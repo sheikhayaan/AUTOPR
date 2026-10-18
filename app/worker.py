@@ -17,12 +17,15 @@ Guarantees implemented here:
   message (original + reclaim overlap), the DONE short-circuit and the unique
   job_results key make the second one a no-op.
 
-* **Bounded retries + escalation.** ``attempts`` is incremented per try; once it
-  exceeds ``max_attempts`` the job is marked DEAD (the human queue) rather than
-  retried forever. The message is ACK'd so it stops being redelivered.
+* **Bounded retries + escalation.** ``attempts`` counts executions. A job that has
+  already run ``max_attempts`` times is flipped to DEAD (the human queue) on its
+  next delivery, without running again. The message is ACK'd so it stops being
+  redelivered.
 
-* **Reconcile on startup.** Closes the insert->XADD crash window: any job left
-  in PENDING/QUEUED with no live delivery is re-published.
+* **Reconcile on startup and periodically.** Closes the insert->XADD crash
+  window: any job left in PENDING (committed but never published) is
+  re-published. Runs at boot and then every ``reconcile_interval_s`` so a
+  stranded row is repaired within a minute, not at the next restart.
 """
 
 from __future__ import annotations
@@ -31,14 +34,17 @@ import os
 import signal
 import socket
 import time
+from collections import OrderedDict
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.rag import grounding_scope
 from app.config import settings
-from app.db import SessionLocal, engine, insert_ignore_duplicates
-from app.models import Base, JobResult, JobStatus, PRJob
+from app.db import SessionLocal, assert_schema_ready, engine, insert_ignore_duplicates
+from app.ingest import claim_and_publish
+from app.models import JobResult, JobStatus, PRJob
 from app.observability import (
     bind_correlation_id,
     clear_correlation_id,
@@ -69,15 +75,48 @@ def default_handler(session: Session, job: PRJob) -> str:
 _CI_EVENTS = frozenset({"check_run", "workflow_run"})
 
 
-def make_graph_handler(graph, reader, github=None, session_factory=None):
+# Repos@shas already embedded in Qdrant by this process. Bounded because a long
+# uptime over many PRs would otherwise grow without limit; an evicted entry at
+# worst re-embeds an unchanged tree (chunk ids are deterministic, so re-ingest is
+# an idempotent upsert, not a duplicate).
+_INDEXED: OrderedDict[tuple[str, str], None] = OrderedDict()
+_INDEXED_MAX = 128
+
+
+def _index_snapshot(rag, repo: str, ref: str, snapshot: list[tuple[str, str]]) -> None:
+    """Ingest a repo snapshot into RAG, once per (repo, sha). Never raises.
+
+    Embedding a whole tree is the expensive part of grounding, and redeliveries
+    (or several jobs on the same commit) would otherwise pay for it repeatedly.
+    A failure here must not fail the job: grounding is an enhancement.
+    """
+    key = (repo, ref)
+    if key in _INDEXED:
+        _INDEXED.move_to_end(key)
+        return
+    if not snapshot:
+        return
+    try:
+        with grounding_scope(repo):
+            n = rag.ingest_repo(snapshot)
+        log.info("worker.rag_indexed", repo=repo, ref=ref[:8], chunks=n)
+    except Exception as exc:  # noqa: BLE001 - grounding is best-effort
+        log.warning("worker.rag_index_failed", repo=repo, ref=ref[:8], error=repr(exc))
+        return
+    _INDEXED[key] = None
+    while len(_INDEXED) > _INDEXED_MAX:
+        _INDEXED.popitem(last=False)
+
+
+def make_graph_handler(graph, reader, github=None, session_factory=None, rag=None):
     """Build the job handler that drives the LangGraph pipeline.
 
     This is the integration seam: it turns a persisted `PRJob` into the
     `PRState` the graph expects, runs the graph, and returns a one-line summary
     for the exactly-once `JobResult` ledger. The collaborators (compiled `graph`,
-    GitHub `reader`, `github` write client, `session_factory`) are built once at
-    worker startup and closed over here, so `process_job` still sees the simple
-    `handler(session, job) -> str` contract.
+    GitHub `reader`, `github` write client, `session_factory`, `rag`) are built
+    once at worker startup and closed over here, so `process_job` still sees the
+    simple `handler(session, job) -> str` contract.
 
     Both tracks are wired, selected by `job.event`:
       * PR-review (pull_request / opened / synchronize): fetch the PR's changed
@@ -88,6 +127,12 @@ def make_graph_handler(graph, reader, github=None, session_factory=None):
         can diagnose, patch, and *prove the patch in the sandbox* before the
         router gates it on a human. The graph's own `_entry_router` picks the
         track from the `ci_event`/`ci_logs` keys set below.
+
+    `rag` (optional, from `build_rag`) grounds the agents in this repo's code. It
+    is ingested from the snapshot we already downloaded on the CI track — one
+    index per (repo, sha), memoized — and retrieval is scoped to `job.repo` for
+    the duration of the run, so a shared collection never mixes repositories.
+    When `rag` is None every agent takes its ungrounded path.
 
     The handler does NOT open a DB session of its own for the graph — the router
     persists through its own `session_factory` (a separate, short-lived session),
@@ -115,14 +160,24 @@ def make_graph_handler(graph, reader, github=None, session_factory=None):
             #    against the real module graph (pytest needs more than the diff).
             state["ci_event"] = job.event
             state["ci_logs"] = job.event_context or ""
-            state["repo_snapshot"] = reader.snapshot_repo(job.repo, job.commit_sha)
+            # 3. The snapshot is already in hand, so it doubles as the RAG corpus
+            #    (chunk + embed once per repo@sha; see _index_snapshot).
+            snapshot = reader.snapshot_repo(job.repo, job.commit_sha)
+            state["repo_snapshot"] = snapshot
+            if rag is not None:
+                _index_snapshot(rag, job.repo, job.commit_sha, snapshot)
 
-        # 3. Run the pipeline. `_entry_router` sends CI jobs to ci_monitor and
+        # 4. Run the pipeline. `_entry_router` sends CI jobs to ci_monitor and
         #    everything else to code_reviewer. The router (bound with github +
         #    session_factory) is the only node that acts outward or queues a human.
-        result = graph.invoke(state)
+        #    Grounding is scoped to this repo so one collection can serve many.
+        if rag is not None:
+            with grounding_scope(job.repo):
+                result = graph.invoke(state)
+        else:
+            result = graph.invoke(state)
 
-        # 4. Summarize for the ledger, per track, so the operator can see at a
+        # 5. Summarize for the ledger, per track, so the operator can see at a
         #    glance what the pipeline actually did.
         action = result.get("action_taken", "none")
         if is_ci:
@@ -181,16 +236,18 @@ def process_job(
         log.info("worker.already_dead", job_id=job_id)
         return True
 
-    job.attempts += 1
-    job.status = JobStatus.PROCESSING
-    session.commit()
-
-    if job.attempts > settings.max_attempts:
+    # Escalate BEFORE incrementing, so `max_attempts` means exactly that many
+    # executions (the previous `attempts > max_attempts` ordering gave N+1 runs).
+    if job.attempts >= settings.max_attempts:
         job.status = JobStatus.DEAD
         job.last_error = (job.last_error or "") + " | exceeded max attempts"
         session.commit()
         log.error("worker.escalated_to_human", job_id=job_id, attempts=job.attempts)
         return True  # ack — it's escalated, not retried
+
+    job.attempts += 1
+    job.status = JobStatus.PROCESSING
+    session.commit()
 
     # --- do the work ---
     summary = handler(session, job)
@@ -211,30 +268,27 @@ def process_job(
 def reconcile_pending(session: Session, queue: JobQueue) -> int:
     """Re-enqueue jobs stranded by a crash in the insert->XADD window.
 
-    Any job still PENDING (never XADD'd) or QUEUED but with no matching live
-    delivery is safe to re-publish because the worker is idempotent. Returns
-    the number re-enqueued.
+    Only PENDING rows are swept: that status means "committed, never confirmed on
+    the stream". QUEUED rows are deliberately left alone — they were published,
+    and a message that is merely in flight (or in another consumer's PEL) must
+    not be published a second time. Genuinely abandoned deliveries are recovered
+    by XAUTOCLAIM instead, which is the mechanism designed for exactly that.
+
+    Re-publishing is safe even if the original message does exist: the worker's
+    exactly-once JobResult makes the extra delivery a no-op. Returns the number
+    re-enqueued.
     """
     stranded = (
         session.execute(select(PRJob).where(PRJob.status == JobStatus.PENDING)).scalars().all()
     )
     count = 0
     for job in stranded:
-        msg_id = queue.publish(
-            {
-                "job_id": job.id,
-                "repo": job.repo,
-                "pr_number": job.pr_number,
-                "commit_sha": job.commit_sha,
-                # Re-enqueued out of band (no live request), so mint a fresh trace id.
-                "correlation_id": new_correlation_id(),
-            }
-        )
-        job.stream_msg_id = msg_id
-        job.status = JobStatus.QUEUED
-        count += 1
+        # Same compare-and-set the webhook uses, so a reconcile pass racing a
+        # live delivery cannot double-publish (and neither can two workers
+        # reconciling at once). Re-enqueued out of band, so mint a fresh trace id.
+        if claim_and_publish(session, queue, job, correlation_id=new_correlation_id()):
+            count += 1
     if count:
-        session.commit()
         log.info("worker.reconciled", reenqueued=count)
     return count
 
@@ -299,34 +353,57 @@ class Worker:
         with SessionLocal() as session:
             reconcile_pending(session, self.queue)
         log.info("worker.started", consumer=self.name)
-        last_reclaim = 0.0
+        if settings.reclaim_idle_ms < 300_000:
+            log.warning(
+                "worker.reclaim_window_may_be_short",
+                reclaim_idle_ms=settings.reclaim_idle_ms,
+                detail="a job slower than this window can be reclaimed and run "
+                "concurrently by another worker;",
+            )
+        last_heartbeat = 0.0
+        last_reconcile = time.monotonic()
         while not self._stop:
             self.run_once(block_ms=2_000)
-            # Periodic reclaim cadence is already covered by run_once, but keep
-            # a heartbeat log for observability.
             now = time.monotonic()
-            if now - last_reclaim > 30:
+            # Periodic reconcile: a PENDING row whose publish failed must not wait
+            # for the next restart to be enqueued (the webhook's 503 tells GitHub
+            # to retry, but a retry landing on the dedup key only repairs it if
+            # ingest sees PENDING — this covers the case where no retry arrives).
+            if now - last_reconcile >= settings.reconcile_interval_s:
+                try:
+                    with SessionLocal() as session:
+                        reconcile_pending(session, self.queue)
+                except Exception as exc:  # noqa: BLE001 - never kill the loop
+                    log.warning("worker.reconcile_failed", error=repr(exc))
+                last_reconcile = now
+            if now - last_heartbeat > 30:
                 log.debug("worker.heartbeat", pending=self.queue.pending_count())
-                last_reclaim = now
+                last_heartbeat = now
         log.info("worker.stopped", consumer=self.name)
 
 
 def main() -> None:
     configure_logging(json_logs=settings.log_json)
-    Base.metadata.create_all(bind=engine)
+    # Alembic owns the schema; refuse to run un-migrated rather than fail per job.
+    assert_schema_ready(engine)
 
     # Assemble the pipeline collaborators once. The graph is compiled a single
     # time and reused across jobs; the router is bound with the write client and
     # SessionLocal so it can post (dry-run by default) and durably queue/dedup.
-    # RAG is left ungrounded here (rag=None): Qdrant isn't guaranteed running and
-    # the agents degrade cleanly without it.
+    # RAG is opt-in (settings.rag_enabled): when it cannot be built (no 'rag'
+    # extra, Qdrant down) build_rag returns None and the agents run ungrounded,
+    # rather than the worker refusing to start.
     from app.agents.graph import build_graph
+    from app.agents.rag import build_rag
     from app.routing.github import get_github_client, get_github_reader
 
     reader = get_github_reader()
     github = get_github_client()
-    graph = build_graph(rag=None, sandbox=None, github=github, session_factory=SessionLocal)
-    handler = make_graph_handler(graph, reader, github=github, session_factory=SessionLocal)
+    rag = build_rag(settings.qdrant_url, log=log) if settings.rag_enabled else None
+    graph = build_graph(rag=rag, sandbox=None, github=github, session_factory=SessionLocal)
+    handler = make_graph_handler(
+        graph, reader, github=github, session_factory=SessionLocal, rag=rag
+    )
 
     queue = JobQueue(make_client())
     Worker(queue, handler=handler).run_forever()

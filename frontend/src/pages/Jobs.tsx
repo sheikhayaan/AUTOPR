@@ -1,16 +1,19 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { usePolling } from '../hooks/usePolling'
+import { useDebounced } from '../hooks/useDebounced'
 import { api } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
 import EmptyState from '../components/EmptyState'
+import { Pager, SearchBox } from '../components/ListControls'
 import { SkeletonRows } from '../components/Skeleton'
 import { AlertIcon, PullRequestIcon, ExternalLinkIcon, ActivityIcon } from '../components/Icons'
 import { shortSha, relativeTime, absTime, statusMeta, pluralize } from '../lib/format'
-import type { Job, OutletContext } from '../types'
+import type { Job, JobStatus, OutletContext } from '../types'
 
-const FILTERS = ['all', 'processing', 'queued', 'pending', 'done', 'dead']
+const PAGE_SIZE = 25
+const FILTERS: Array<'all' | JobStatus> = ['all', 'processing', 'queued', 'pending', 'done', 'dead']
 
 function JobRow({ job, webUrl }: { job: Job; webUrl: string }) {
   const prUrl = `${webUrl}/${job.repo}/pull/${job.pr_number}`
@@ -80,24 +83,48 @@ function JobRow({ job, webUrl }: { job: Job; webUrl: string }) {
 
 export default function Jobs() {
   const { stats } = useOutletContext<OutletContext>()
+  const [filter, setFilter] = useState<'all' | JobStatus>('all')
+  const [search, setSearch] = useState('')
+  const [offset, setOffset] = useState(0)
+  const q = useDebounced(search, 300)
+
+  // Paging + filtering happen on the server: a job history at scale must not be
+  // pulled wholesale just so the browser can slice it.
   const { data, error, loading, refreshing, updatedAt, reload } = usePolling(
-    () => api.jobs(100),
+    () =>
+      api.jobs({
+        limit: PAGE_SIZE,
+        offset,
+        q,
+        status: filter === 'all' ? undefined : filter,
+      }),
     5000,
+    [offset, q, filter],
   )
-  const [filter, setFilter] = useState('all')
+
+  // Any change to the query resets to the first page, so "Next" can never point
+  // past the end of a freshly filtered set.
+  useEffect(() => {
+    setOffset(0)
+  }, [q, filter])
 
   // Derive the PR host from the API base (exposed via /stats) so links work
   // against GitHub Enterprise too. Falls back to github.com before stats load.
   const webUrl = stats?.config?.github_web_url ?? 'https://github.com'
 
   const jobs = useMemo(() => data?.jobs ?? [], [data])
-  const counts = useMemo(() => {
-    const c: Record<string, number> = { all: jobs.length }
-    for (const j of jobs) c[j.status] = (c[j.status] || 0) + 1
-    return c
-  }, [jobs])
+  const total = data?.total ?? 0
+  // Chip counts come from /stats (whole-table aggregates), not the current page.
+  const counts: Record<string, number> = {
+    all: stats?.jobs?.total ?? total,
+    pending: stats?.jobs?.pending ?? 0,
+    queued: stats?.jobs?.queued ?? 0,
+    processing: stats?.jobs?.processing ?? 0,
+    done: stats?.jobs?.done ?? 0,
+    dead: stats?.jobs?.dead ?? 0,
+  }
 
-  const visible = filter === 'all' ? jobs : jobs.filter((j) => j.status === filter)
+  const visible = jobs
 
   const header = (
     <PageHeader
@@ -106,7 +133,14 @@ export default function Jobs() {
       updatedAt={updatedAt}
       refreshing={refreshing}
       onRefresh={reload}
-    />
+    >
+      <SearchBox
+        label="Search jobs"
+        value={search}
+        onChange={setSearch}
+        placeholder="repo, sha or event…"
+      />
+    </PageHeader>
   )
 
   if (loading) {
@@ -156,6 +190,7 @@ export default function Jobs() {
             <button
               key={f}
               onClick={() => setFilter(f)}
+              aria-pressed={active}
               className={`chip px-3 py-1.5 text-xs transition-colors ${
                 active
                   ? 'border-brand-500/30 bg-brand-500/12 text-brand-300'
@@ -185,17 +220,29 @@ export default function Jobs() {
           <EmptyState
             icon={filter === 'all' ? PullRequestIcon : ActivityIcon}
             title={
-              filter === 'all' ? 'No jobs yet' : `No ${statusMeta(filter).label.toLowerCase()} jobs`
+              search
+                ? 'No matching jobs'
+                : filter === 'all'
+                  ? 'No jobs yet'
+                  : `No ${statusMeta(filter).label.toLowerCase()} jobs`
             }
             description={
-              filter === 'all'
-                ? 'Open or update a pull request on a connected repo — or run the demo seed — and it will show up here.'
-                : 'Try a different filter.'
+              search
+                ? `Nothing matches “${search}”. Try a repo name, a commit sha or an event.`
+                : filter === 'all'
+                  ? 'Open or update a pull request on a connected repo — or run the demo seed — and it will show up here.'
+                  : 'Try a different filter.'
             }
             action={
-              filter !== 'all' ? (
-                <button onClick={() => setFilter('all')} className="btn-ghost btn-sm">
-                  Show all jobs
+              search || filter !== 'all' ? (
+                <button
+                  onClick={() => {
+                    setSearch('')
+                    setFilter('all')
+                  }}
+                  className="btn-ghost btn-sm"
+                >
+                  Clear filters
                 </button>
               ) : undefined
             }
@@ -206,9 +253,11 @@ export default function Jobs() {
           {visible.map((j) => (
             <JobRow key={j.id} job={j} webUrl={webUrl} />
           ))}
-          <p className="mt-2 px-1 text-xs text-ink-faint">
+          <Pager total={total} limit={PAGE_SIZE} offset={offset} onOffset={setOffset} unit="jobs" />
+          <p className="mt-1 px-1 text-xs text-ink-faint">
             Showing {pluralize(visible.length, 'job')}
-            {filter !== 'all' && ` · ${statusMeta(filter).label.toLowerCase()}`}.
+            {filter !== 'all' && ` · ${statusMeta(filter).label.toLowerCase()}`}
+            {search && ` · matching “${search}”`}.
           </p>
         </div>
       )}

@@ -45,12 +45,14 @@ def client():
     app.dependency_overrides.clear()
 
 
-def _add_job(client, *, status: JobStatus, sha: str, pr: int) -> int:
+def _add_job(
+    client, *, status: JobStatus, sha: str, pr: int, repo: str = "octocat/hello-world"
+) -> int:
     s = client._TestSession()
     try:
         job = PRJob(
             dedup_key=f"k-{sha}-{pr}",
-            repo="octocat/hello-world",
+            repo=repo,
             pr_number=pr,
             commit_sha=sha,
             author="octocat",
@@ -65,9 +67,9 @@ def _add_job(client, *, status: JobStatus, sha: str, pr: int) -> int:
         s.close()
 
 
-def _pr_state(risk: str, sha: str, pr: int = 7) -> dict:
+def _pr_state(risk: str, sha: str, pr: int = 7, repo: str = "octocat/hello-world") -> dict:
     return {
-        "repo": "octocat/hello-world",
+        "repo": repo,
         "pr_number": pr,
         "commit_sha": sha,
         "changed_files": [{"path": "a.py", "patch": "+x"}],
@@ -131,6 +133,38 @@ def test_jobs_limit_is_clamped(client):
         _add_job(client, status=JobStatus.DONE, sha=f"s{i}", pr=i)
     body = client.get("/jobs?limit=2").json()
     assert body["count"] == 2
+    # total is pre-paging, so the UI can render a pager.
+    assert body["total"] == 3
+
+
+def test_jobs_paging_walks_the_whole_set(client):
+    for i in range(5):
+        _add_job(client, status=JobStatus.DONE, sha=f"s{i}", pr=i + 1)
+    page1 = client.get("/jobs?limit=2&offset=0").json()
+    page2 = client.get("/jobs?limit=2&offset=2").json()
+    page3 = client.get("/jobs?limit=2&offset=4").json()
+    seen = [j["id"] for page in (page1, page2, page3) for j in page["jobs"]]
+    assert len(seen) == 5 and len(set(seen)) == 5  # no overlap, no gap
+    assert page3["count"] == 1
+    assert all(p["total"] == 5 for p in (page1, page2, page3))
+
+
+def test_jobs_search_matches_repo_and_sha(client):
+    _add_job(client, status=JobStatus.DONE, sha="deadbeef", pr=1, repo="acme/api")
+    _add_job(client, status=JobStatus.DONE, sha="cafebabe", pr=2, repo="acme/web")
+
+    body = client.get("/jobs?q=deadbe").json()
+    assert body["total"] == 1 and body["jobs"][0]["commit_sha"] == "deadbeef"
+    assert client.get("/jobs?q=WEB").json()["total"] == 1  # case-insensitive
+    # LIKE metacharacters are literals, not wildcards.
+    assert client.get("/jobs?q=%25").json()["total"] == 0
+
+
+def test_jobs_filter_by_status(client):
+    _add_job(client, status=JobStatus.DONE, sha="a", pr=1)
+    _add_job(client, status=JobStatus.DEAD, sha="b", pr=2)
+    assert client.get("/jobs?status=dead").json()["total"] == 1
+    assert client.get("/jobs?status=bogus").json()["total"] == 0
 
 
 # --- /reviews (history) ------------------------------------------------------
@@ -153,4 +187,18 @@ def test_reviews_filter_by_status(client):
 def test_reviews_unknown_status_is_empty_not_error(client):
     resp = client.get("/reviews?status=bogus")
     assert resp.status_code == 200
-    assert resp.json() == {"count": 0, "reviews": []}
+    body = resp.json()
+    assert body["count"] == 0 and body["reviews"] == [] and body["total"] == 0
+
+
+def test_reviews_paging_and_search(client):
+    for i in range(4):
+        _queue_decision(client, _pr_state("high", f"x{i}", pr=i + 1, repo="acme/api"))
+    _queue_decision(client, _pr_state("high", "y9", pr=9, repo="other/svc"))
+
+    page = client.get("/reviews?limit=2&offset=2").json()
+    assert page["count"] == 2 and page["total"] == 5
+    assert client.get("/reviews?q=acme").json()["total"] == 4
+    assert client.get("/reviews?q=other").json()["total"] == 1
+    combined = client.get("/reviews?q=acme&status=executed").json()
+    assert combined["total"] == 0  # filters compose

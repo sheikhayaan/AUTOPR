@@ -12,8 +12,9 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any, cast
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import CursorResult, create_engine, event
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, sessionmaker
@@ -90,13 +91,46 @@ def supports_insert_returning() -> bool:
     return sqlite3.sqlite_version_info >= (3, 35, 0)
 
 
-def insert_ignore_duplicates(
-    table,
-    values: dict,
-    index_elements: list[str],
-    *,
-    returning=None,
-):
+def assert_schema_ready(target_engine) -> None:
+    """Fail fast at boot if the database has not been migrated.
+
+    Alembic is the single owner of the schema (see docs/decisions/phase-8.md);
+    nothing in the app creates tables any more. That means a deploy that forgets
+    `alembic upgrade head` would otherwise fail later and obscurely — the first
+    webhook dying on "no such table: pr_jobs". Instead we compare the tables the
+    models expect against what the database actually has and refuse to start with
+    an actionable message.
+
+    Cheap (one inspection query) and idempotent, so both the API and the worker
+    call it at startup.
+    """
+    from sqlalchemy import inspect
+
+    from app.models import Base
+
+    existing = set(inspect(target_engine).get_table_names())
+    missing = sorted(set(Base.metadata.tables) - existing)
+    if missing:
+        raise RuntimeError(
+            "database schema is not migrated: missing table(s) "
+            f"{', '.join(missing)}. Run `alembic upgrade head` against "
+            f"{settings.database_url!r} before starting AutoPR."
+        )
+
+
+def execute_for_rowcount(session: Session, stmt) -> int:
+    """Execute a DML statement and return how many rows it changed.
+
+    ``Session.execute`` is typed as returning ``Result``, which has no
+    ``rowcount``; a Core UPDATE/DELETE yields a ``CursorResult``, which does.
+    Centralised here so every compare-and-set (ingest publish claim, approve /
+    reject CAS) reads the result the same way and mypy stays satisfied.
+    """
+    result = session.execute(stmt)
+    return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+
+def insert_ignore_duplicates(table, values: dict, index_elements: list[str], *, returning=None):
     """Return a dialect-appropriate ``INSERT ... ON CONFLICT DO NOTHING``.
 
     This is the load-bearing primitive for idempotency: a duplicate webhook

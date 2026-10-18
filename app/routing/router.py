@@ -18,6 +18,10 @@ Two responsibilities, deliberately in one place because they share the
 Safety invariants:
   * A decision with requires_approval=True is NEVER executed here — it is only
     persisted. Execution waits for an explicit human approve call.
+  * The auto path NEVER executes an existing row that a human gate owns. It only
+    posts when it created the row on this delivery (or is retrying a row it left
+    FAILED). A redelivery whose LLM score came back lower cannot bypass a queued
+    or rejected decision — see the gate-preservation note on router_node.
   * The node never raises. A GitHub or DB failure is logged and reflected in the
     returned state; it does not crash the worker mid-run.
 """
@@ -87,6 +91,15 @@ def router_node(
     graph), so BOTH paths are deduped through the ReviewDecision ledger when a
     factory is present. The gated path enqueues PENDING; the auto path
     get-or-creates a row and skips the post if it's already EXECUTED.
+
+    Gate preservation (load-bearing): the policy is re-evaluated on every
+    delivery, and the LLM is not deterministic, so the same commit can be scored
+    `medium` once (queued for a human) and `low` on a later delivery. The auto
+    path therefore executes ONLY a row it created itself, or one left FAILED by a
+    previous auto-post attempt. If the key already resolves to a human-owned row
+    (PENDING, APPROVED) or a REJECTED one, the auto path does nothing: a lower
+    risk score on a redelivery must never execute work an earlier delivery
+    escalated to a human, and must never override a rejection.
     """
     decision = policy.route(state)
 
@@ -106,8 +119,22 @@ def router_node(
         if session_factory is not None:
             try:
                 with session_factory() as session:
-                    row = store.enqueue(session, decision, dict(state))
+                    row, _created = store.enqueue_tracked(session, decision, dict(state))
                     base["decision_id"] = row.id
+                    if row.status == DecisionStatus.EXECUTED:
+                        # An earlier auto-safe run already carried this action out;
+                        # there is nothing left for a human to approve.
+                        base["action_taken"] = "already_executed"
+                        base["action_url"] = row.result_url or ""
+                        log.info("router.queued_already_executed", id=row.id)
+                        return base
+                    # An earlier *auto* post attempt failed and left the row
+                    # FAILED. `list_pending` only shows PENDING, so without
+                    # re-opening it this human-gated decision would be invisible
+                    # in the queue and executed by nobody.
+                    needs_requeue = row.status == DecisionStatus.FAILED
+                    if needs_requeue and store.requeue_failed(session, row.id):
+                        log.info("router.requeued_failed_for_human", id=row.id)
             except Exception as exc:  # never crash the run on a store hiccup
                 log.error("router.enqueue_failed", error=repr(exc))
                 base["action_taken"] = "enqueue_failed"
@@ -129,13 +156,31 @@ def router_node(
     if session_factory is not None:
         try:
             with session_factory() as session:
-                row = store.enqueue(session, decision, dict(state))
+                row, created = store.enqueue_tracked(session, decision, dict(state))
                 base["decision_id"] = row.id
                 if row.status == DecisionStatus.EXECUTED:
                     # A prior delivery already posted this. Idempotent no-op.
                     base["action_taken"] = "already_executed"
                     base["action_url"] = row.result_url or ""
                     log.info("router.auto_already_executed", id=row.id, url=row.result_url)
+                    return base
+                if not created and row.status == DecisionStatus.REJECTED:
+                    # A human said no to this exact action. A lower risk score on
+                    # a redelivery must not resurrect it.
+                    base["action_taken"] = "already_rejected"
+                    log.warning("router.auto_blocked_rejected", id=row.id, repo=state.get("repo"))
+                    return base
+                if not created and row.status != DecisionStatus.FAILED:
+                    # The key already belongs to a human-gated decision (PENDING
+                    # from an earlier, higher-risk delivery, or APPROVED with an
+                    # execution in flight). The gate owns it: do not post.
+                    base["action_taken"] = "already_queued"
+                    log.warning(
+                        "router.auto_blocked_by_gate",
+                        id=row.id,
+                        status=row.status.value,
+                        repo=state.get("repo"),
+                    )
                     return base
                 result = execute_decision(gh, decision, state)
                 if result.ok:

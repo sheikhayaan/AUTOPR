@@ -20,18 +20,47 @@ hallucinating nonexistent patterns.
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 from app.config import settings
 
+# Which repo the current pipeline run is grounding against. A single Qdrant
+# collection serves every repo the operator watches (indexing each repo into its
+# own collection would need a client per repo), so chunks are tagged with their
+# repo and retrieval is *scoped* to the run's repo through this context var. The
+# worker sets it around `graph.invoke` (see grounding_scope); agents never have to
+# know a repo name. When unset, retrieval is unfiltered — the behaviour tests and
+# single-repo deployments have always had.
+_current_repo: ContextVar[str | None] = ContextVar("autopr_rag_repo", default=None)
+
+
+@contextmanager
+def grounding_scope(repo: str):
+    """Scope RAG ingest/retrieve to `repo` for the duration of a pipeline run."""
+    token = _current_repo.set(repo)
+    try:
+        yield
+    finally:
+        _current_repo.reset(token)
+
+
 try:
     # fastembed pulls onnxruntime (heavy), so it is the optional 'rag' extra. RAG is
-    # off by default (the worker builds the graph with rag=None), so the app runs
-    # without it — importing this module must not hard-require the dependency.
+    # opt-in (settings.rag_enabled, off by default), so the app runs without it —
+    # importing this module must not hard-require the dependency.
     from fastembed import TextEmbedding
 except ImportError:  # pragma: no cover - depends on whether the 'rag' extra is installed
     TextEmbedding = None  # type: ignore[assignment,misc]
@@ -132,6 +161,7 @@ class RepoRAG:
                     id=chunk.chunk_id,
                     vector=vec,
                     payload={
+                        "repo": _current_repo.get() or "",
                         "file_path": chunk.file_path,
                         "content": chunk.content,
                         "start_line": chunk.start_line,
@@ -147,9 +177,43 @@ class RepoRAG:
         """Retrieve the top-k most similar chunks to the query.
 
         Returns a list of dicts with keys: file_path, content, start_line, end_line.
+        Scoped to the repo set by `grounding_scope` so one repo's patterns can
+        never leak into another repo's review.
         """
         vec = self._embed([query])[0]
+        scope = _current_repo.get()
+        query_filter = (
+            Filter(must=[FieldCondition(key="repo", match=MatchValue(value=scope))])
+            if scope
+            else None
+        )
         # qdrant-client >=1.14 replaced .search() with .query_points(); the
         # response wraps hits in .points.
-        response = self.client.query_points(collection_name=self.collection, query=vec, limit=top_k)
+        response = self.client.query_points(
+            collection_name=self.collection, query=vec, limit=top_k, query_filter=query_filter
+        )
         return [hit.payload for hit in response.points if hit.payload]
+
+
+def build_rag(
+    qdrant_url: str | None = None, collection_name: str = "autopr_repo", log=None
+) -> RepoRAG | None:
+    """Construct the RAG store, or return None if it is not usable.
+
+    Three things can make retrieval unavailable, and none of them should stop the
+    pipeline: the optional ``fastembed`` extra is not installed (no embedding
+    model), the Qdrant server is unreachable, or the collection cannot be
+    created. Grounding is an *enhancement* — the agents are written to run
+    ungrounded — so any failure degrades to ``rag=None`` with a warning, which is
+    also what keeps the worker startable in a deployment that has no Qdrant.
+    """
+    import structlog
+
+    logger = log or structlog.get_logger()
+    try:
+        store = RepoRAG(qdrant_url=qdrant_url, collection_name=collection_name)
+    except Exception as exc:  # noqa: BLE001 - any failure means "run ungrounded"
+        logger.warning("rag.unavailable", error=repr(exc))
+        return None
+    logger.info("rag.enabled", collection=collection_name)
+    return store

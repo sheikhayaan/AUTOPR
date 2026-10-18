@@ -32,22 +32,25 @@ class ActionResult:
     """Outcome of an outward action. `url` is the created comment/PR when real."""
 
     ok: bool
-    kind: str  # "comment" | "pull_request" | "review_request" | "noop"
+    kind: str  # "comment" | "noop"
     url: str = ""
     detail: str = ""
 
 
 @runtime_checkable
 class GitHubClient(Protocol):
-    """The three outward actions Phase 4 needs. Kept minimal on purpose."""
+    """The one outward action the pipeline performs: comment on a PR.
+
+    Deliberately single-method. A review comment is the only write AutoPR ever
+    makes on its own behalf — it changes no code and creates no refs. Anything
+    richer (opening a PR, committing a branch, requesting reviewers) needs a
+    credential that can rewrite a repository, which is exactly the blast radius
+    this project exists to avoid; a maintainer promotes a verified patch by hand
+    from the queued diff. Keeping the protocol this narrow means the write
+    surface cannot silently grow.
+    """
 
     def post_issue_comment(self, repo: str, pr_number: int, body: str) -> ActionResult: ...
-
-    def create_pull_request(
-        self, repo: str, head: str, base: str, title: str, body: str
-    ) -> ActionResult: ...
-
-    def request_review(self, repo: str, pr_number: int, reviewers: list[str]) -> ActionResult: ...
 
 
 @dataclass
@@ -69,27 +72,6 @@ class FakeGitHubClient:
     def post_issue_comment(self, repo: str, pr_number: int, body: str) -> ActionResult:
         self.calls.append({"op": "comment", "repo": repo, "pr_number": pr_number, "body": body})
         return ActionResult(ok=True, kind="comment", url=self._next_url("comment"))
-
-    def create_pull_request(
-        self, repo: str, head: str, base: str, title: str, body: str
-    ) -> ActionResult:
-        self.calls.append(
-            {
-                "op": "pull_request",
-                "repo": repo,
-                "head": head,
-                "base": base,
-                "title": title,
-                "body": body,
-            }
-        )
-        return ActionResult(ok=True, kind="pull_request", url=self._next_url("pull"))
-
-    def request_review(self, repo: str, pr_number: int, reviewers: list[str]) -> ActionResult:
-        self.calls.append(
-            {"op": "review_request", "repo": repo, "pr_number": pr_number, "reviewers": reviewers}
-        )
-        return ActionResult(ok=True, kind="review_request", url=self._next_url("review"))
 
 
 class HttpGitHubClient:
@@ -131,22 +113,6 @@ class HttpGitHubClient:
     def post_issue_comment(self, repo: str, pr_number: int, body: str) -> ActionResult:
         # Issue-comment endpoint works for PRs too (a PR is an issue in the API).
         return self._post(f"/repos/{repo}/issues/{pr_number}/comments", {"body": body}, "comment")
-
-    def create_pull_request(
-        self, repo: str, head: str, base: str, title: str, body: str
-    ) -> ActionResult:
-        return self._post(
-            f"/repos/{repo}/pulls",
-            {"title": title, "head": head, "base": base, "body": body},
-            "pull_request",
-        )
-
-    def request_review(self, repo: str, pr_number: int, reviewers: list[str]) -> ActionResult:
-        return self._post(
-            f"/repos/{repo}/pulls/{pr_number}/requested_reviewers",
-            {"reviewers": reviewers},
-            "review_request",
-        )
 
 
 def get_github_client() -> GitHubClient:
@@ -282,25 +248,42 @@ class HttpGitHubReader:
         import httpx
 
         url = f"{self.api_url}/repos/{repo}/tarball/{ref}"
-        resp = httpx.get(url, headers=self._headers(), timeout=60.0, follow_redirects=True)
-        resp.raise_for_status()
+        # Stream the download so an outsized tarball is rejected *while arriving*
+        # rather than after it is fully buffered in worker memory.
+        buf = bytearray()
+        with httpx.stream(
+            "GET", url, headers=self._headers(), timeout=60.0, follow_redirects=True
+        ) as resp:
+            resp.raise_for_status()
+            for chunk in resp.iter_bytes():
+                buf.extend(chunk)
+                if len(buf) > settings.snapshot_max_tarball_bytes:
+                    raise ValueError(
+                        f"repo tarball for {repo} exceeds "
+                        f"{settings.snapshot_max_tarball_bytes} bytes"
+                    )
         files = _extract_repo_tarball(
-            resp.content,
+            bytes(buf),
             max_file_bytes=settings.snapshot_max_file_bytes,
             max_files=settings.snapshot_max_files,
+            max_total_bytes=settings.snapshot_max_total_bytes,
         )
         log.info("github.read.snapshot", repo=repo, ref=ref[:8], n=len(files))
         return files
 
 
 def _extract_repo_tarball(
-    raw_gz: bytes, *, max_file_bytes: int, max_files: int
+    raw_gz: bytes,
+    *,
+    max_file_bytes: int,
+    max_files: int,
+    max_total_bytes: int | None = None,
 ) -> list[tuple[str, str]]:
     """Decode a GitHub repo tarball into `[(relpath, text), ...]`. Pure + testable.
 
     Kept as a free function (no network, no self) precisely so the fiddly parts —
-    the path rewrite and the two caps — are unit-testable from an in-memory
-    tar.gz without touching GitHub.
+    the path rewrite and the caps — are unit-testable from an in-memory tar.gz
+    without touching GitHub.
 
     Three behaviours worth stating:
       * GitHub nests the whole repo under one top dir named `<owner>-<repo>-<sha>/`;
@@ -309,19 +292,26 @@ def _extract_repo_tarball(
       * Only regular files that decode as UTF-8 are kept. Binaries (and any
         non-UTF-8 file) are skipped — every downstream sandbox check (ruff, mypy,
         pytest) is a text tool, so a binary in the tree is noise, not signal.
-      * Both caps are defensive against a pathological/huge repo blowing up
-        worker memory: a file over `max_file_bytes` is skipped, and we stop once
-        `max_files` text files are collected. The caller logs the resulting count;
-        silent truncation is a documented corner (see docs/decisions/phase-5.md).
+      * Three caps defend worker memory: a file over `max_file_bytes` is skipped,
+        we stop once `max_files` text files are collected, and we stop once the
+        running total of decoded file bytes would exceed `max_total_bytes`.
+        The per-file and per-count caps alone multiply (2,000 x 1 MB = 2 GB), so
+        the total cap is the one that actually binds on a big repo. Silent
+        truncation is a documented corner (see docs/decisions/phase-5.md).
     """
     import io
     import tarfile
 
     out: list[tuple[str, str]] = []
+    total_bytes = 0
     with tarfile.open(fileobj=io.BytesIO(raw_gz), mode="r:gz") as tar:
         for member in tar:
             if not member.isfile() or member.size > max_file_bytes:
                 continue
+            if max_total_bytes is not None and total_bytes + member.size > max_total_bytes:
+                # Everything collected so far is kept; we stop rather than
+                # accumulate an unbounded tree in the worker process.
+                break
             # Strip the single leading "<top>/" component GitHub prepends.
             rel = member.name.split("/", 1)[1] if "/" in member.name else member.name
             # Defense-in-depth against a crafted tar: no absolute paths, no
@@ -336,6 +326,7 @@ def _extract_repo_tarball(
             except UnicodeDecodeError:
                 continue  # binary / non-utf8 — not something the checks can use
             out.append((rel, text))
+            total_bytes += member.size
             if len(out) >= max_files:
                 break
     return out

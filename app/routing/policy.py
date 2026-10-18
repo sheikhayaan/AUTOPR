@@ -39,7 +39,7 @@ class Action(str, Enum):
     """What the system wants to do with a finished pipeline result."""
 
     COMMENT_REVIEW = "comment_review"  # post the code review as a PR comment
-    PROPOSE_FIX = "propose_fix"  # promote a verified fix (open PR / comment)
+    PROPOSE_FIX = "propose_fix"  # post a verified patch diff for a human to apply
     ESCALATE = "escalate"  # flag for a human; system will not act
     NONE = "none"  # nothing actionable
 
@@ -112,7 +112,40 @@ def _render_review_body(state: PRState) -> str:
             lines.append(f"- {icon} {loc} — {f.get('message', '').strip()}")
     else:
         lines += ["", "_No blocking issues found._"]
+    lines += _render_draft_tests(state.get("generated_tests", ""))
     return "\n".join(lines)
+
+
+def _render_draft_tests(tests: str) -> list[str]:
+    """Render the Test Generator's output as a collapsed block, or nothing.
+
+    The tests are the one place model output could smuggle markup into a
+    maintainer's browser, so they are fenced as code (never HTML) and capped: a
+    runaway generation must not turn a review comment into a wall. A comment is
+    a review artefact, so a *draft* suggestion is clearly labelled as such and
+    never claimed to have been run.
+    """
+    body = (tests or "").strip()
+    if not body:
+        return []
+    limit = 4_000
+    truncated = len(body) > limit
+    body = body[:limit]
+    out = [
+        "",
+        "<details><summary>🧪 Suggested tests (draft — not executed)</summary>",
+        "",
+        "```python",
+        body,
+        "```",
+    ]
+    if truncated:
+        # Do not claim the full draft is recoverable elsewhere: the comment body
+        # IS the persisted artefact (ReviewDecision.body), so a truncation note
+        # that pointed at "the job result" would be a lie.
+        out += ["", f"_(truncated at {limit} characters to keep the comment readable)_"]
+    out.append("</details>")
+    return out
 
 
 def _render_fix_body(state: PRState) -> str:

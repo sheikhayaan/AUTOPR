@@ -82,8 +82,10 @@ delete + reseed. Documented, not hidden — see Corners.
 the head SHA with a single `GET /repos/{repo}/tarball/{ref}` (which 302-redirects
 to a signed codeload URL we follow), then a **pure** module-level helper
 `_extract_repo_tarball` decodes it: strip GitHub's `<owner>-<repo>-<sha>/` top
-directory, keep only UTF-8-decodable regular files, and apply two caps
-(`snapshot_max_file_bytes`, `snapshot_max_files`).
+directory, keep only UTF-8-decodable regular files, and apply three caps
+(`snapshot_max_file_bytes`, `snapshot_max_files`, `snapshot_max_total_bytes`).
+The download itself is streamed so `snapshot_max_tarball_bytes` rejects an
+outsized tarball while it is arriving, before it is buffered whole.
 
 **Why.** The fix verifier needs the **whole** tree, not just the PR's changed
 files (decision #4), so we are fetching potentially hundreds of files. The tarball
@@ -93,9 +95,13 @@ rate limit and latency linearly in repo size. Factoring the decode into a pure,
 network-free function is what makes the fiddly parts — the path rewrite, the
 binary skip, the two caps — unit-testable from an in-memory `tar.gz` with no
 GitHub and no token (`test_github_reader.py`). The caps are defense against a
-pathological or binary-heavy repo blowing up worker memory; the byte cap skips
-oversize files, the count cap stops collection, and the caller logs the resulting
-count so truncation is observable.
+pathological or binary-heavy repo blowing up worker memory: the per-file cap
+skips oversize files, the count cap stops collection, and the total-bytes cap
+stops once the decoded text would exceed a memory budget. The total cap is the
+one that actually binds: the per-file and per-count caps *multiply*
+(2,000 x 1 MB = 2 GB in worker memory and inside the LangGraph state), which is
+far past a small worker's limit. The caller logs the resulting count so
+truncation is observable.
 
 **Rejected — git-tree + per-blob fetch.** N+1 API calls, dramatically worse on any
 real repo, for no correctness gain. **Rejected — `git clone` in the worker.**
@@ -177,12 +183,13 @@ commits independently of the job-ledger transaction.
    upgrade to CI-Monitor accuracy.
 
 3. **Snapshot caps can silently truncate a large repo.** A repo exceeding
-   `snapshot_max_files` (2000) or with files over `snapshot_max_file_bytes` (1 MB)
-   is partially snapshotted. We *log the resulting file count* so truncation is
-   observable, but a truncated tree could make `pytest` fail to import a dropped
-   module and yield a spurious `check_failed` → escalate. Mitigation: the caps are
-   generous for typical service repos, and the failure mode is "escalate to human,"
-   never "wrong fix applied." Raising/removing the caps is a config change.
+   `snapshot_max_files` (2000), `snapshot_max_total_bytes` (25 MB of decoded
+   text), or with files over `snapshot_max_file_bytes` (1 MB) is partially
+   snapshotted. We *log the resulting file count* so truncation is observable,
+   but a truncated tree could make `pytest` fail to import a dropped module and
+   yield a spurious `check_failed` → escalate. Mitigation: the caps are generous
+   for typical service repos, and the failure mode is "escalate to human," never
+   "wrong fix applied." Raising/removing the caps is a config change.
 
 4. **The sandbox image must already contain the repo's dependencies.** Carried from
    `phase-3.md` corner #3: the sandbox runs `--network none`, so `pytest`/`import`

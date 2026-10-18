@@ -9,11 +9,13 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import func, select
+import pytest
+from redis.exceptions import RedisError
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.ingest import ingest
-from app.models import JobStatus, PRJob
+from app.models import Base, JobStatus, PRJob
 
 
 def _job_count(session) -> int:
@@ -36,6 +38,49 @@ def test_duplicate_delivery_is_noop(db, queue, sample_payload):
     assert _stream_len(queue) == 1  # enqueued exactly once
 
 
+def test_publish_failure_is_repaired_by_the_retried_delivery(
+    db, queue, sample_payload, monkeypatch
+):
+    """A 503'd delivery must not strand the job until a worker restart.
+
+    Sequence: row commits PENDING, XADD raises (Redis blip), the webhook returns
+    503, GitHub retries. The retry collides on the dedup key, so without a repair
+    branch the job is never enqueued. The publish-failure marker is what lets the
+    retry tell this state apart from a concurrent race-loser.
+    """
+    real_publish = queue.publish
+
+    def dead_redis(_fields):
+        raise RedisError("redis down")
+
+    monkeypatch.setattr(queue, "publish", dead_redis)
+    with pytest.raises(RedisError):
+        ingest(db, queue, sample_payload)
+
+    job = db.execute(select(PRJob)).scalar_one()
+    assert job.status == JobStatus.PENDING
+    assert job.last_error.startswith("publish failed")
+    assert _stream_len(queue) == 0
+
+    # GitHub retries the delivery once Redis is back.
+    monkeypatch.setattr(queue, "publish", real_publish)
+    retried = ingest(db, queue, sample_payload)
+
+    assert retried.created is False
+    assert retried.job_id == job.id
+    db.refresh(job)
+    assert job.status == JobStatus.QUEUED
+    assert job.last_error is None
+    assert _stream_len(queue) == 1  # enqueued exactly once, by the retry
+
+
+def test_duplicate_of_a_queued_job_is_not_republished(db, queue, sample_payload):
+    """The repair must not fire for a job another delivery already enqueued."""
+    ingest(db, queue, sample_payload)
+    ingest(db, queue, sample_payload)
+    assert _stream_len(queue) == 1
+
+
 def test_different_sha_creates_new_job(db, queue, sample_payload):
     """Sanity: a genuinely new head SHA on the same PR is NOT deduped."""
     from dataclasses import replace
@@ -49,21 +94,30 @@ def test_different_sha_creates_new_job(db, queue, sample_payload):
     assert _stream_len(queue) == 2
 
 
-def test_concurrent_same_pr_creates_one_job(race_engine, queue, sample_payload):
+def test_concurrent_same_pr_creates_one_job(tmp_path, queue, sample_payload):
     """(c) Two webhooks race for the same PR head SHA.
 
-    Each thread gets its own connection (as real requests would), so the unique
-    index on dedup_key is the thing that decides the winner — exactly one
-    created=True, one job row, one stream message.
+    Each thread gets its own connection, as two real requests would. (The shared
+    `Session` fixture uses a StaticPool — one connection — and `rowcount` is then
+    the result of whichever statement ran last on it, so both threads can read
+    0 or both read 1. That is a harness artifact, not app behaviour, and it is
+    why this test builds its own file DB.)
 
-    A barrier releases both threads into ingest() together so the overlap is
-    real rather than hopeful; on the file-backed race engine the loser blocks on
-    the write lock (busy timeout) and then sees the committed row.
+    The unique constraint on dedup_key must yield exactly one job row; the
+    compare-and-set in `claim_and_publish` must yield exactly one stream entry;
+    and exactly one caller sees created=True.
+
+    Note: SQLite serialises writes, so this validates the constraint-driven logic
+    rather than true Postgres lock contention (flagged in the decisions log).
     """
-    RaceSession = sessionmaker(
-        bind=race_engine, autoflush=False, expire_on_commit=False, future=True
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'race.db'}",
+        future=True,
+        connect_args={"check_same_thread": False, "timeout": 10},
     )
-    start = threading.Barrier(2, timeout=10)
+    Base.metadata.create_all(bind=engine)
+    RaceSession = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    start = threading.Barrier(2)  # release both threads into ingest() together
 
     def worker() -> bool:
         s = RaceSession()
@@ -86,13 +140,14 @@ def test_concurrent_same_pr_creates_one_job(race_engine, queue, sample_payload):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: worker(), range(2)))
 
-    assert sorted(results) == [False, True]  # exactly one winner
+    assert sorted(results) == [False, True]  # exactly one INSERT winner
 
     check = RaceSession()
     try:
-        rows = check.execute(select(PRJob)).scalars().all()
-        assert len(rows) == 1
-        assert rows[0].status == JobStatus.QUEUED
+        assert _job_count(check) == 1
+        job = check.execute(select(PRJob)).scalar_one()
+        assert job.status == JobStatus.QUEUED  # not stranded in PENDING
     finally:
         check.close()
     assert _stream_len(queue) == 1
+    engine.dispose()

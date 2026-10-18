@@ -19,13 +19,32 @@ Fidelity caveats (also in the decisions log):
 from __future__ import annotations
 
 # --- Test environment setup --------------------------------------------------
-# AUTOPR_ALLOW_INSECURE MUST be set before any `app.*` import: constructing
-# Settings runs the fail-fast secret validator at import time, and CI has no
-# .env (so the webhook secret would be the shipped placeholder). This opts into
-# the documented local/dev/test escape hatch the validator carves out.
+# This MUST happen before any `app.*` import.
+#
+# Two problems are solved at once:
+#
+# 1. Settings construction runs the fail-fast secret validator. CI has no .env
+#    (so the webhook secret is the shipped placeholder), which would raise on
+#    import. AUTOPR_ALLOW_INSECURE opts into the documented dev/test escape hatch.
+#
+# 2. Hermeticity. pydantic-settings gives real environment variables precedence
+#    over `.env`, so pinning the safety-relevant fields here makes the suite
+#    independent of whatever a developer's local `.env` contains. Without this,
+#    a `.env` with AUTOPR_HANDOFF_MODE=true silently flips every routing test to
+#    the all-gated path (15 failures), and a real AUTOPR_API_TOKEN 401s the
+#    approve/reject tests. Tests that exercise a non-default posture (hand-off
+#    mode, auth, rate limiting) opt in locally via monkeypatch — see
+#    test_handoff_mode.py, test_auth.py.
 import os
 
-os.environ.setdefault("AUTOPR_ALLOW_INSECURE", "1")
+os.environ["AUTOPR_ALLOW_INSECURE"] = "1"
+os.environ["AUTOPR_HANDOFF_MODE"] = "false"
+os.environ["AUTOPR_GITHUB_DRY_RUN"] = "true"
+os.environ["AUTOPR_GITHUB_TOKEN"] = ""
+os.environ["AUTOPR_API_TOKEN"] = ""
+os.environ["AUTOPR_REQUIRE_AUTH_FOR_READS"] = "false"
+os.environ["AUTOPR_RATE_LIMIT_ENABLED"] = "false"
+os.environ["AUTOPR_LOG_JSON"] = "true"
 
 import fakeredis
 import pytest
@@ -37,17 +56,18 @@ from app.config import settings as _settings
 from app.models import Base
 from app.queue import JobQueue
 
-# Force a test-safe security posture, overriding whatever a developer's local
-# .env supplies (a real AUTOPR_API_TOKEN there would otherwise make the existing
-# unauthenticated approve/reject tests 401). We mutate the process-wide settings
-# singleton that app.main already imported, so the change is visible to the app:
-# auth is a no-op, reads are open, and the per-IP rate limiter is off — every
-# TestClient request shares the client IP "testclient", so a live limiter would
-# accumulate across unrelated tests and flake. Tests that exercise auth or rate
-# limiting opt back in locally via monkeypatch (see test_auth.py).
+# Belt and braces: force the same posture on the process-wide settings singleton
+# that app.main already imported, so the guarantee holds even if a future field
+# default or loader change slips past the environment pins above. auth is a
+# no-op, reads are open, the rate limiter is off (every TestClient request shares
+# the client IP "testclient", so a live limiter would accumulate across unrelated
+# tests and flake), no outward writes, and no hand-off mode.
 _settings.api_token = ""
 _settings.require_auth_for_reads = False
 _settings.rate_limit_enabled = False
+_settings.handoff_mode = False
+_settings.github_dry_run = True
+_settings.github_token = ""
 
 
 @pytest.fixture()

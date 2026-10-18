@@ -24,12 +24,17 @@ def test_fake_records_comment_and_returns_url():
     assert gh.calls == [{"op": "comment", "repo": "o/r", "pr_number": 5, "body": "hello"}]
 
 
-def test_fake_records_pr_and_review_request():
-    gh = FakeGitHubClient()
-    gh.create_pull_request("o/r", "fix-branch", "main", "t", "b")
-    gh.request_review("o/r", 5, ["alice"])
-    ops = [c["op"] for c in gh.calls]
-    assert ops == ["pull_request", "review_request"]
+def test_write_surface_is_comment_only():
+    """Guard against silent growth of what the bot can do to a repository.
+
+    `create_pull_request` / `request_review` existed and were never called. They
+    are deleted rather than kept "for later": an unused method on the write
+    boundary is a capability with no test and no gate. If a future phase wants to
+    open a PR, that is a decision to make explicitly (docs/decisions/phase-4.md),
+    not a method lying around.
+    """
+    methods = {n for n in dir(GitHubClient) if not n.startswith("_")}
+    assert methods == {"post_issue_comment"}
 
 
 def test_fake_satisfies_protocol():

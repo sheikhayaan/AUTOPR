@@ -17,7 +17,15 @@ export interface PollingState<T> {
 //   - loading:    true only on the very first load (drives skeletons)
 //   - refreshing: true during background/manual refreshes (drives the live dot)
 //   - reload():   force an immediate silent refresh (manual refresh button)
-export function usePolling<T>(fn: () => Promise<T>, intervalMs = 5000): PollingState<T> {
+//   - deps:       values the request depends on (page, filter, search term). When
+//                 one changes the hook refetches immediately instead of waiting
+//                 for the next interval — otherwise a pager/filter would appear
+//                 to do nothing for up to `intervalMs`, which reads as a bug.
+export function usePolling<T>(
+  fn: () => Promise<T>,
+  intervalMs = 5000,
+  deps: readonly unknown[] = [],
+): PollingState<T> {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -61,8 +69,10 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs = 5000): PollingS
       clearInterval(id)
       document.removeEventListener('visibilitychange', onVisible)
     }
+    // Restarting the interval when a request parameter changes is intentional: a
+    // fresh query means a fresh poll cycle (and an immediate load).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intervalMs])
+  }, [intervalMs, ...deps])
 
   return { data, error, loading, refreshing, updatedAt, reload: () => load(true) }
 }

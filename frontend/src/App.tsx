@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import ReviewQueue from './pages/ReviewQueue'
 import Jobs from './pages/Jobs'
+import History from './pages/History'
 
 export default function App() {
   return (
@@ -10,6 +11,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/reviews" element={<ReviewQueue />} />
+        <Route path="/history" element={<History />} />
         <Route path="/jobs" element={<Jobs />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

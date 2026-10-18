@@ -142,6 +142,26 @@ def test_extract_enforces_file_count_cap():
     assert len(out) == 3
 
 
+def test_extract_enforces_total_byte_cap():
+    # The per-file and per-count caps multiply (2,000 x 1 MB = 2 GB), so the total
+    # cap is what actually bounds worker memory on a big repo.
+    files = {f"f{i}.py": b"y" * 1_000 for i in range(10)}
+    out = _extract_repo_tarball(
+        _make_tarball(files),
+        max_file_bytes=1_000_000,
+        max_files=2_000,
+        max_total_bytes=2_500,
+    )
+    assert len(out) == 2  # 2 x 1,000 bytes fits; a third would exceed 2,500
+    assert sum(len(text) for _, text in out) <= 2_500
+
+
+def test_extract_total_cap_is_optional():
+    files = {f"f{i}.py": b"y" * 1_000 for i in range(3)}
+    out = _extract_repo_tarball(_make_tarball(files), max_file_bytes=1_000_000, max_files=2_000)
+    assert len(out) == 3
+
+
 def test_extract_ignores_directory_entries():
     # Only regular files come back; the DIRTYPE top entry is not a (path, text).
     raw = _make_tarball({"a.py": b"1\n"})

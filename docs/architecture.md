@@ -29,7 +29,7 @@ flowchart TB
     end
 
     subgraph WORKER["Worker process — app/worker.py"]
-        CONSUME["consume + XAUTOCLAIM reclaim<br/>+ reconcile-on-startup"]
+        CONSUME["consume + XAUTOCLAIM reclaim<br/>+ reconcile at boot and<br/>on an interval"]
         GRAPH["LangGraph pipeline"]
         LEDGER["exactly-once<br/>job_results ledger"]
     end
@@ -68,8 +68,10 @@ independently of the HTTP request.
 3. **Persist + enqueue idempotently.** A `PRJob` row is written with a unique
    `dedup_key = repo|pr|sha|event`; a duplicate delivery hits the unique
    constraint and is a silent no-op. The row is committed **`PENDING` before**
-   the Redis `XADD`, so if the publish fails the job still exists and the
-   worker's reconcile will re-enqueue it.
+   the Redis `XADD`, so if the publish fails the job still exists. Publication is
+   a compare-and-set (`PENDING → QUEUED`, exactly one winner), and the row is
+   repaired three ways: the retried delivery itself, the worker's periodic
+   reconcile, or the next worker start.
 4. **Return** `{"status": "queued"|"duplicate", "job_id": …}` with `200`.
 
 If Redis is unreachable at publish time, the handler returns **503** (not 500):

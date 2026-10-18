@@ -22,13 +22,13 @@ import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db import SessionLocal, engine
+from app.db import SessionLocal, assert_schema_ready, engine
 from app.ingest import ingest, parse_event
-from app.models import Base, DecisionStatus, JobStatus, PRJob, ReviewDecision
+from app.models import DecisionStatus, JobStatus, PRJob, ReviewDecision
 from app.observability import (
     CORRELATION_ID_HEADER,
     JOBS_GAUGE,
@@ -79,9 +79,16 @@ def get_github(request: Request):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables (Phase 1 convenience; real migrations = Alembic, noted in
-    # the decisions log as deferred).
-    Base.metadata.create_all(bind=engine)
+    # The schema belongs to Alembic (`alembic upgrade head`, run as a release step
+    # in docker compose / CI); the app never creates tables. Refuse to serve an
+    # un-migrated database instead of failing obscurely on the first webhook.
+    assert_schema_ready(engine)
+    # Clear claims abandoned by a crashed approver: a row sits APPROVED while the
+    # process that claimed it is gone, so it would otherwise be stuck "in
+    # progress" forever. At startup nothing is in flight, so any APPROVED row is
+    # provably stranded; FAILED lets an operator re-approve (retry) or reject it.
+    with SessionLocal() as session:
+        store.sweep_interrupted(session)
     # Loud warning if the mutating API is left unauthenticated (empty token).
     # Allowed for local dev; must never be the case in a real deployment.
     if not settings.api_token:
@@ -289,6 +296,30 @@ def metrics(request: Request, db: Session = Depends(get_db)) -> PlainTextRespons
     return PlainTextResponse(content=payload, media_type=content_type)
 
 
+async def _read_body_with_limit(request: Request, limit: int) -> bytes:
+    """Buffer the raw request body, refusing more than `limit` bytes.
+
+    The HMAC is computed over the raw bytes, so we must read them — but we must
+    not read an unbounded amount first. A caller without a valid signature can
+    still send us a body (we only reject it *after* reading), so an unlimited
+    `await request.body()` is pre-auth memory amplification. The rate limiter
+    bounds request count, not size. We check the declared Content-Length first
+    (cheap reject) and then enforce the same cap while streaming, which also
+    covers chunked bodies that declare nothing.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=413, detail="payload too large")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail="payload too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @app.post("/webhook", dependencies=[Depends(_webhook_rl)])
 async def webhook(
     request: Request,
@@ -299,7 +330,7 @@ async def webhook(
     queue: JobQueue = Depends(get_queue),
 ) -> dict:
     # 1. Verify signature over the RAW body.
-    raw = await request.body()
+    raw = await _read_body_with_limit(request, settings.max_webhook_bytes)
     if not verify_signature(settings.webhook_secret, raw, x_hub_signature_256):
         log.warning("webhook.invalid_signature", gh_event=x_github_event)
         response.status_code = 401
@@ -404,26 +435,36 @@ def approve_review(
 ) -> dict:
     """Approve a queued decision and carry out its GitHub action.
 
-    Idempotent-ish: approving an already-executed decision is a no-op that
-    returns the existing result rather than posting twice. A failed GitHub call
-    marks the decision FAILED (not executed) so it can be retried.
+    Exactly-once on the happy path: the PENDING -> APPROVED transition is a
+    conditional UPDATE (a compare-and-set), so concurrent approvals — a
+    double-click, a retried request, two operators — cannot both post. Only the
+    caller that changed the row proceeds; everyone else gets 409 (or
+    `already_executed` once the winner is done).
+
+    A failed GitHub call marks the decision FAILED (not executed) so it can be
+    retried by approving again.
     """
-    row = store.get(db, decision_id)
+    row, outcome = store.claim_approval(db, decision_id)
     if row is None:
         response.status_code = 404
         return {"detail": "not found"}
-    if row.status == DecisionStatus.EXECUTED:
+    if outcome == "already_executed":
         return {"status": "already_executed", "decision": _decision_view(row)}
-    if row.status == DecisionStatus.REJECTED:
+    if outcome == "rejected":
         response.status_code = 409
         return {"detail": "decision was rejected"}
+    if outcome == "in_progress":
+        # Another approver holds the claim (or a crashed one does, until the
+        # startup sweep clears it to FAILED). Refusing is what makes a
+        # double-submit unable to post twice.
+        response.status_code = 409
+        return {"detail": "approval already in progress", "decision": _decision_view(row)}
 
     if settings.handoff_mode:
         # Hand-off mode performs no GitHub write. "Approve" records that the
         # maintainer has taken it to GitHub to act under their own account; we
         # mark it handled and point at the review screen.
         url = _pr_review_url(row.repo, row.pr_number)
-        store.mark_approved(db, row)
         store.mark_executed(db, row, url)
         log.info(
             "audit.review_handed_off",
@@ -438,7 +479,6 @@ def approve_review(
         )
         return {"status": "handed_off", "url": url, "decision": _decision_view(row)}
 
-    store.mark_approved(db, row)
     # Reconstruct the minimal state the executor needs from the stored row.
     state = {"repo": row.repo, "pr_number": row.pr_number, "commit_sha": row.commit_sha}
     decision = {"action": row.action, "body": row.body, "title": row.title}
@@ -484,15 +524,22 @@ def reject_review(
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Reject a queued decision. No GitHub action is taken, ever."""
-    row = store.get(db, decision_id)
+    """Reject a queued decision. No GitHub action is taken, ever.
+
+    The transition is a compare-and-set from PENDING, so rejecting cannot
+    overwrite an approval that is already in flight (approve claimed it) or one
+    that has already fired.
+    """
+    row, outcome = store.reject_pending(db, decision_id)
     if row is None:
         response.status_code = 404
         return {"detail": "not found"}
-    if row.status == DecisionStatus.EXECUTED:
+    if outcome == "already_executed":
         response.status_code = 409
         return {"detail": "already executed; cannot reject"}
-    store.mark_rejected(db, row)
+    if outcome == "in_progress":
+        response.status_code = 409
+        return {"detail": "approval already in progress; cannot reject"}
     log.info(
         "audit.review_rejected",
         decision_id=row.id,
@@ -569,16 +616,63 @@ def stats(db: Session = Depends(get_db)) -> dict:
     }
 
 
+def _paged(stmt, offset: int, limit: int):
+    """Apply ORDER BY-independent paging (callers order first)."""
+    return stmt.offset(max(0, offset)).limit(max(1, min(limit, 200)))
+
+
+def _like(term: str) -> str:
+    """Escape-free LIKE pattern for a user-supplied search term.
+
+    ``%`` and ``_`` in user input are literal characters, not wildcards, so they
+    are escaped; the escape character is declared in the WHERE clause.
+    """
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 @app.get("/jobs", dependencies=[Depends(require_api_token_for_reads)])
-def list_jobs(db: Session = Depends(get_db), limit: int = 50) -> dict:
-    """Recent PR jobs (newest first) with their exactly-once result summary."""
-    limit = max(1, min(limit, 200))
+def list_jobs(
+    db: Session = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    status: str | None = None,
+) -> dict:
+    """PR job history (newest first), paged and searchable.
+
+    ``q`` matches repo / commit sha / event; ``status`` filters the lifecycle
+    state. ``total`` is the count *before* paging so the UI can render page
+    links without a second round trip.
+    """
+    stmt = select(PRJob)
+    if q:
+        pattern = _like(q.strip())
+        stmt = stmt.where(
+            or_(
+                PRJob.repo.ilike(pattern, escape="\\"),
+                PRJob.commit_sha.ilike(pattern, escape="\\"),
+                PRJob.event.ilike(pattern, escape="\\"),
+            )
+        )
+    if status:
+        try:
+            stmt = stmt.where(PRJob.status == JobStatus(status))
+        except ValueError:
+            return {"count": 0, "total": 0, "limit": limit, "offset": offset, "jobs": []}
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = (
-        db.execute(select(PRJob).order_by(PRJob.created_at.desc(), PRJob.id.desc()).limit(limit))
+        db.execute(_paged(stmt.order_by(PRJob.created_at.desc(), PRJob.id.desc()), offset, limit))
         .scalars()
         .all()
     )
-    return {"count": len(rows), "jobs": [_job_view(j) for j in rows]}
+    return {
+        "count": len(rows),
+        "total": int(total),
+        "limit": max(1, min(limit, 200)),
+        "offset": max(0, offset),
+        "jobs": [_job_view(j) for j in rows],
+    }
 
 
 @app.get("/reviews", dependencies=[Depends(require_api_token_for_reads)])
@@ -586,29 +680,54 @@ def list_reviews(
     db: Session = Depends(get_db),
     status: str | None = None,
     limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
 ) -> dict:
-    """Routing-decision history (newest first), optionally filtered by status.
+    """Routing-decision history (newest first), filtered, paged and searchable.
 
     Complements ``/reviews/pending`` (oldest-first work queue) with the full
     ledger the dashboard's history view renders. An unknown ``status`` yields an
     empty list rather than a 4xx — the UI passes enum values it got from us.
     """
-    limit = max(1, min(limit, 200))
-    stmt = (
-        select(ReviewDecision)
-        .order_by(ReviewDecision.created_at.desc(), ReviewDecision.id.desc())
-        .limit(limit)
-    )
+    stmt = select(ReviewDecision)
     if status:
         try:
             wanted = DecisionStatus(status)
         except ValueError:
-            return {"count": 0, "reviews": []}
-        stmt = (
-            select(ReviewDecision)
-            .where(ReviewDecision.status == wanted)
-            .order_by(ReviewDecision.created_at.desc(), ReviewDecision.id.desc())
-            .limit(limit)
+            return {
+                "count": 0,
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "reviews": [],
+            }
+        stmt = stmt.where(ReviewDecision.status == wanted)
+    if q:
+        pattern = _like(q.strip())
+        stmt = stmt.where(
+            or_(
+                ReviewDecision.repo.ilike(pattern, escape="\\"),
+                ReviewDecision.title.ilike(pattern, escape="\\"),
+                ReviewDecision.commit_sha.ilike(pattern, escape="\\"),
+                ReviewDecision.reason.ilike(pattern, escape="\\"),
+            )
         )
-    rows = db.execute(stmt).scalars().all()
-    return {"count": len(rows), "reviews": [_decision_view(r) for r in rows]}
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = (
+        db.execute(
+            _paged(
+                stmt.order_by(ReviewDecision.created_at.desc(), ReviewDecision.id.desc()),
+                offset,
+                limit,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "count": len(rows),
+        "total": int(total),
+        "limit": max(1, min(limit, 200)),
+        "offset": max(0, offset),
+        "reviews": [_decision_view(r) for r in rows],
+    }

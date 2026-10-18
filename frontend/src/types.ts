@@ -85,8 +85,16 @@ export interface Stats {
 }
 
 // --- Envelope responses ------------------------------------------------------
-export interface JobsResponse {
+// `total` is the count BEFORE paging (so a pager can be rendered without a
+// second request); `count` is how many rows are in this page.
+export interface Page {
   count: number
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface JobsResponse extends Page {
   jobs: Job[]
 }
 
@@ -95,8 +103,7 @@ export interface PendingResponse {
   pending: Decision[]
 }
 
-export interface ReviewsResponse {
-  count: number
+export interface ReviewsResponse extends Page {
   reviews: Decision[]
 }
 

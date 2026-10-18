@@ -22,12 +22,22 @@ Two independent mechanisms:
   Empty token = unauthenticated dev no-op (with a startup warning). Read
   endpoints are unauthenticated unless `AUTOPR_REQUIRE_AUTH_FOR_READS=true`.
 
+**Where the dashboard gets the token.** The UI has no login screen and no server
+session — it is a single-operator console. Open **Settings** (top-right of the
+sidebar) or visit `/settings`, paste the token, and press *Verify & save*: the
+dialog calls `GET /stats` with it first and only persists a token the API
+accepted (a rejected token is never stored). It lives in `localStorage` under
+`autopr_api_token`; *Clear token* removes it. Because the check is real, a wrong
+token fails in the dialog instead of as a mystery empty dashboard.
+
 | Failure | Status |
 | --- | --- |
 | Bad/missing webhook signature | `401` |
 | Bad/missing bearer token (when required) | `401` |
 | Rate limit exceeded | `429` (+ `Retry-After`) |
+| Webhook body over `AUTOPR_MAX_WEBHOOK_BYTES` | `413` |
 | Queue (Redis) unavailable on ingest | `503` |
+| Approve/reject a row another caller already claimed | `409` |
 
 Rate limits: `AUTOPR_RATE_LIMIT_WEBHOOK_PER_MIN` (default 120) and
 `AUTOPR_RATE_LIMIT_MUTATIONS_PER_MIN` (default 30), per client IP.
@@ -105,6 +115,7 @@ curl -sS -X POST localhost:8000/reviews/42/approve \
 | `200 {"status":"executed","url":…}` | Action performed (or recorded, in dry-run). |
 | `200 {"status":"already_executed",…}` | Idempotent — was already done. |
 | `409 {"detail":"decision was rejected"}` | Can't approve a rejected decision. |
+| `409 {"detail":"approval already in progress"}` | Another approve call claimed it first (double-click / retry / second operator). The claim is a compare-and-set, so the action is posted exactly once. Re-approve only after the winner reports `executed`, or after a failed/crashed one leaves the row `FAILED`. |
 | `404` | No such decision. |
 | `502 {"status":"action_failed",…}` | Live GitHub call failed; marked `FAILED`, retryable. |
 
@@ -113,7 +124,9 @@ Reject a decision. **No GitHub action is ever taken.**
 ```bash
 curl -sS -X POST localhost:8000/reviews/42/reject -H "Authorization: Bearer $AUTOPR_API_TOKEN"
 ```
-`200 {"status":"rejected",…}` · `409` if already executed · `404` if not found.
+`200 {"status":"rejected",…}` · `409` if already executed · `409 {"detail":"approval
+already in progress; cannot reject"}` if an approval has claimed the row · `404` if
+not found.
 
 ---
 

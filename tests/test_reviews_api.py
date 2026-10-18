@@ -165,3 +165,38 @@ def test_reject_after_execute_is_conflict(client):
     client.post(f"/reviews/{did}/approve")
     resp = client.post(f"/reviews/{did}/reject")
     assert resp.status_code == 409
+
+
+# --- approve CAS (double-submit safety) --------------------------------------
+def test_second_approval_while_one_is_in_flight_is_refused(client):
+    """Two approvals racing must not both post.
+
+    Simulate the race at the state level: the first request claims the row
+    (PENDING -> APPROVED) and is mid-post; the second arrives before
+    mark_executed. It must be refused, not post a second comment.
+    """
+    did = _seed(client, _pr_state())
+    s = client._TestSession()
+    try:
+        row, outcome = store.claim_approval(s, did)  # the first approver
+        assert outcome == "claimed" and row is not None
+    finally:
+        s.close()
+
+    resp = client.post(f"/reviews/{did}/approve")
+    assert resp.status_code == 409
+    assert "in progress" in resp.json()["detail"]
+    assert client._github.calls == []  # nothing posted by the loser
+
+
+def test_reject_is_refused_while_an_approval_is_in_flight(client):
+    did = _seed(client, _pr_state())
+    s = client._TestSession()
+    try:
+        store.claim_approval(s, did)
+    finally:
+        s.close()
+
+    resp = client.post(f"/reviews/{did}/reject")
+    assert resp.status_code == 409
+    assert client._github.calls == []
