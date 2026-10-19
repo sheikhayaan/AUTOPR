@@ -44,3 +44,6 @@ qdrant_storage/
 # local dev server logs
 frontend/*.log
 vite.out.log
+
+# generated python caches inside docs
+__pycache__/
