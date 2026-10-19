@@ -34,6 +34,7 @@ interface DecisionCardProps {
   onCopy: () => void
   dryRun: boolean
   handoff: boolean
+  readOnly: boolean
   webUrl: string
 }
 
@@ -47,6 +48,7 @@ function DecisionCard({
   onCopy,
   dryRun,
   handoff,
+  readOnly,
   webUrl,
 }: DecisionCardProps) {
   const prUrl = `${webUrl}/${decision.repo}/pull/${decision.pr_number}`
@@ -114,13 +116,26 @@ function DecisionCard({
       <div className="flex flex-col gap-3 border-t border-line bg-white/[0.015] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <p className="flex items-center gap-1.5 text-xs text-ink-faint">
           <ShieldIcon className="h-3.5 w-3.5 shrink-0" />
-          {handoff
-            ? 'AutoPR never writes to GitHub. Open the PR to approve under your own account, then mark it handled.'
-            : dryRun
-              ? 'Approving records the action (dry-run — nothing is sent to GitHub).'
-              : 'Approving posts this to GitHub. Rejecting takes no action, ever.'}
+          {readOnly
+            ? 'Read-only demo: no action is available to visitors. Approvals run in a private deploy.'
+            : handoff
+              ? 'AutoPR never writes to GitHub. Open the PR to approve under your own account, then mark it handled.'
+              : dryRun
+                ? 'Approving records the action (dry-run — nothing is sent to GitHub).'
+                : 'Approving posts this to GitHub. Rejecting takes no action, ever.'}
         </p>
-        {handoff ? (
+        {readOnly ? (
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button onClick={onCopy} className="btn-ghost btn-sm">
+              <CommentIcon className="h-4 w-4" />
+              Copy review
+            </button>
+            <a href={reviewUrl} target="_blank" rel="noreferrer" className="btn-ghost btn-sm">
+              Open on GitHub
+              <ExternalLinkIcon className="h-4 w-4" />
+            </a>
+          </div>
+        ) : handoff ? (
           <div className="flex flex-wrap items-center gap-2.5">
             <button onClick={onCopy} className="btn-ghost btn-sm">
               <CommentIcon className="h-4 w-4" />
@@ -183,6 +198,9 @@ export default function ReviewQueue() {
 
   const dryRun = stats?.config?.github_dry_run !== false
   const handoff = stats?.config?.handoff_mode === true
+  // The API refuses approve/reject with 403 in public mode, so offering the
+  // buttons would only produce an error toast. Hide them and say why.
+  const readOnly = stats?.config?.public_mode === true
   const webUrl = stats?.config?.github_web_url ?? 'https://github.com'
 
   const toggle = (id: number) => setExpanded((e) => ({ ...e, [id]: !e[id] }))
@@ -315,6 +333,7 @@ export default function ReviewQueue() {
               decision={d}
               dryRun={dryRun}
               handoff={handoff}
+              readOnly={readOnly}
               webUrl={webUrl}
               expanded={expanded[d.id] ?? true}
               onToggle={() => toggle(d.id)}

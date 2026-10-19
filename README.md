@@ -8,7 +8,7 @@
 **Every code-changing action, and every review above `low` risk, is queued for a human.**
 **Dry-run by default: out of the box, it touches nothing.**
 
-![tests](https://img.shields.io/badge/tests-291%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
+![tests](https://img.shields.io/badge/tests-323%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
 ![coverage](https://img.shields.io/badge/coverage-87%25-2ea043?style=flat-square)
 ![mypy](https://img.shields.io/badge/mypy-30%20files%20clean-2ea043?style=flat-square)
 ![ruff](https://img.shields.io/badge/ruff-64%20files%20clean-2ea043?style=flat-square)
@@ -44,7 +44,7 @@
 | 6 | [Core pipeline](#core-pipeline) | Job and decision state machines + per-stage guards |
 | 7 | [Data model](#data-model) | `erDiagram`, PK/FK, and where vectors vs rows live |
 | 8 | [Measured performance](#measured-performance) | 1,008 timed HTTP calls + 270 policy calls, ingestion breakdown, cold-start warning |
-| 9 | [Codebase composition](#codebase-composition) | 15,841 lines, counted at generation time |
+| 9 | [Codebase composition](#codebase-composition) | 16,545 lines, counted at generation time |
 | 10 | [Repository map](#repository-map) | The 15 files that carry the design |
 | 11 | [Quickstart](#quickstart) | Local two-terminal, Docker, and a 60-second smoke test |
 | 12 | [Configuration](#configuration) | All 42 settings with real defaults |
@@ -126,6 +126,9 @@ test that enforces the claim, so you can check it rather than trust it.
 | | Dedup on `repo\|pr\|sha\|action` with a unique index | ✅ |
 | | Per-IP rate limits (webhook 120/min, mutations 30/min) | ✅ |
 | | Optional repo allowlist (deny before insert, zero spend) | ✅ |
+| | Per-repo and per-instance job quotas (`429` + `Retry-After`) | ✅ |
+| | Read-only public demo mode (approve/reject `403` for everyone) | ✅ |
+| | Trusted-proxy `X-Forwarded-For` handling (per-visitor limits) | ✅ |
 | **Reasoning** | `code_reviewer` — findings + risk score | ✅ |
 | | `test_generator` — draft tests, never executed | ✅ |
 | | `ci_monitor` — failure classification + diagnosis | ✅ |
@@ -457,16 +460,16 @@ python scripts/bench_api.py --scale 3       # 3x samples for a tighter p99
 ## Codebase composition
 
 <div align="center">
-<img src="./docs/assets/donut.svg" alt="Composition of 15,841 lines across 106 files" width="100%">
+<img src="./docs/assets/donut.svg" alt="Composition of 16,545 lines across 109 files" width="100%">
 </div>
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 5,129 | 30 | 32.4% |
-| Tests (`tests/`) | 5,212 | 33 | 32.9% |
-| Dashboard (`frontend/src`) | 4,141 | 37 | 26.1% |
-| Tooling (`scripts/`, `alembic/`) | 1,359 | 6 | 8.6% |
-| **Total** | **15,841** | **106** | **100%** |
+| Backend (`app/`) | 5,348 | 31 | 32.3% |
+| Tests (`tests/`) | 5,633 | 35 | 34.0% |
+| Dashboard (`frontend/src`) | 4,205 | 37 | 25.4% |
+| Tooling (`scripts/`, `alembic/`) | 1,359 | 6 | 8.2% |
+| **Total** | **16,545** | **109** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
 from the tree. Tests are 31% of the codebase, which is the ratio a service whose failure
@@ -484,7 +487,7 @@ mode is "writes to your repository" should have.
 <summary><b>Plain tree with line counts</b></summary>
 
 ```text
-AUTOPR/                                    15,841 lines · 106 files
+AUTOPR/                                    16,545 lines · 109 files
 ├── app/                                    5,067
 │   ├── main.py                               733   webhook + ops API + reads
 │   ├── worker.py                             413   consume · reclaim · reconcile
@@ -512,7 +515,7 @@ AUTOPR/                                    15,841 lines · 106 files
 │   │   ├── state.py                           64   the typed graph state
 │   │   └── llm.py                             41   Groq client factory
 │   └── sandbox/{runner,verifier,policy}.py    450   container flags and caps
-├── tests/                                  5,212   291 tests in 33 files
+├── tests/                                  5,633   323 tests in 35 files
 ├── frontend/src/                           4,141   9 test files, 4 routes, typed client
 ├── docs/                                           architecture · operations · api · 14 ADRs
 ├── docs/assets/                                    generate.py + 6 SVGs + bench_result.json
@@ -609,6 +612,10 @@ catastrophic in effect: a forgeable webhook, and an `/approve` endpoint that ans
 | `AUTOPR_GITHUB_TOKEN` | ⬜ | *(empty)* | Enables live reads/writes. Only meaningful with dry-run off. |
 | `AUTOPR_REQUIRE_AUTH_FOR_READS` | ⬜ | `false` | Gate `/jobs`, `/reviews`, `/stats` behind the token too. **Set true on any internet-reachable instance.** |
 | `AUTOPR_ALLOWED_REPOS` | ⬜ | *(empty)* | Comma-separated `owner/name` allowlist. Empty = any repo with a signed webhook. Set it on public repos, or fork PRs bill your LLM key. |
+| `AUTOPR_PUBLIC_MODE` | ⬜ | `false` | Read-only public demo. Refuses to boot unless allowlist + dry-run + quotas are set; then approve/reject return 403 for *everyone*. |
+| `AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR` | ⬜ | `0` (off) | Soft cost ceiling per repo per hour, answered `429` + `Retry-After`. Required > 0 in public mode. |
+| `AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY` | ⬜ | `0` (off) | Soft instance-wide daily ceiling; the bound a stranger cannot escape. Required > 0 in public mode. |
+| `AUTOPR_TRUSTED_PROXIES` | ⬜ | *(empty)* | IPs/CIDRs of proxies whose `X-Forwarded-For` we believe. Empty = header ignored, because a direct client could forge a bucket per request. |
 | `AUTOPR_ALLOW_INSECURE` | ⬜ | `false` | Local/dev/test escape hatch for *both* fail-fast checks. |
 | `AUTOPR_CORS_ORIGINS` | ⬜ | local dev origins | Comma-separated allowlist for the dashboard origin. |
 
@@ -786,21 +793,23 @@ these two numbers rather than guessing, and refetches immediately when the query
 | Authorization | Bearer token for mutations, constant-time compare, optional for reads | `security.py::require_api_token()` |
 | Fail-fast config | Refuses to boot on the placeholder secret **or** an empty API token — neither misconfig can survive to request time | `config.py::_enforce_secure_config` (`test_secure_boot.py`) |
 | Cost containment | Optional `owner/name` allowlist; a signed delivery from an unlisted repo is answered `ignored` before the INSERT, so it costs no row, no enqueue and no LLM call | `ingest.py::repo_is_allowed`, `main.py` webhook route |
+| Public posture | `AUTOPR_PUBLIC_MODE` makes approve/reject 403 for everyone (operator token included) and forces allowlist + dry-run + quotas at boot | `config.py::_enforce_public_mode`, `main.py` approve/reject |
+| Spend ceiling | Per-repo/hour and instance/day job quotas, checked before the INSERT; a refusal costs no row and no model call | `quota.py::quota_reason` (`test_public_mode.py`) |
+| Client identity | `X-Forwarded-For` honoured only when the socket peer is a declared trusted proxy, walking the chain from the right | `ratelimit.py::resolve_client_ip` (`test_client_ip.py`) |
 | Write surface | The client exposes exactly one write: `post_issue_comment` | `tests/test_github_client.py::test_write_surface_is_comment_only` |
 | Human approval | CAS claim, terminal states, audit log with actor IP | `routing/store.py::claim_approval()` |
 | Code execution | `--network none`, non-root, read-only rootfs, memory/CPU/PID caps, timeout | `sandbox/runner.py` |
 | Path handling | Snapshot extraction contained with `is_relative_to` | `sandbox/` + tests |
 | Supply chain | Pinned `uv.lock` + `package-lock.json`, no unpinned installs in CI | lockfiles |
 
-**What a stranger can still reach, by default.** Two defaults are open and one is fatal-if-empty:
-the read endpoints answer anonymously (`/jobs`, `/reviews/pending`, `/stats` expose repo names, PR
-numbers, authors and the exact comment text awaiting approval) because
-`AUTOPR_REQUIRE_AUTH_FOR_READS` is `false`; `AUTOPR_ALLOWED_REPOS` is empty, so any repo able to
-deliver a signed webhook can spend your LLM budget; and `AUTOPR_API_TOKEN` — the one setting whose
-absence makes `/approve` answer anyone — is now a **boot failure** rather than a warning. The first
-two are one-line `.env` changes, and [`operations.md § 8`](docs/operations.md#8-perimeter-exposing-the-api-to-the-internet)
-describes the deployment shape that removes the read path from the internet entirely instead of
-relying on a flag.
+**Two postures, and you pick one.** A *private* instance (the default) answers reads anonymously and
+lets any repo with a signed webhook create work; that is fine because nobody else can reach it. A
+*public* instance (`AUTOPR_PUBLIC_MODE=true`) keeps reads open — a demo nobody can read is not a
+demo — but closes every write path to every caller, forces dry-run, and will not start without an
+allowlist and two positive quotas. Those three invariants are checked at boot, not warned about,
+because each one turns a demo into either a free LLM proxy for strangers or a remote code-change
+service for whoever finds the URL. `AUTOPR_API_TOKEN` being empty is a boot failure in both
+postures; `AUTOPR_TRUSTED_PROXIES` is what keeps the per-IP limiter honest behind a proxy.
 
 **Threat model, stated plainly.** This is a single-operator, self-hosted tool. There is no
 login, no session, no per-user attribution — the bearer token belongs to one operator and
@@ -813,13 +822,13 @@ isolation is *not* implemented, and the roadmap says so rather than implying oth
 
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
-<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>291 passed, 5 skipped</b> (293 if a Docker daemon is running)</td></tr>
-<tr><td>Secure boot</td><td><code>uv run pytest tests/test_secure_boot.py</code></td><td><b>10 passed</b> &mdash; empty token and unlisted repo, each with a negative control that proves the test fails when the guard is removed</td></tr>
+<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>323 passed, 5 skipped</b> (325 when a Docker daemon is running) &mdash; 328 collected</td></tr>
+<tr><td>Security guards</td><td><code>uv run pytest tests/test_secure_boot.py tests/test_public_mode.py tests/test_client_ip.py</code></td><td><b>42 passed</b> across the three hardenings &mdash; token, allowlist, public mode, quotas, client IP &mdash; each with a negative control that proves the test fails when the guard is removed</td></tr>
 <tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>87%</b> (gate 78%)</td></tr>
 <tr><td>Lint</td><td><code>ruff check app tests scripts docs/assets/generate.py</code></td><td><b>68 files, clean</b></td></tr>
 <tr><td>Format</td><td><code>ruff format --check</code></td><td><b>clean</b></td></tr>
 <tr><td>Types (backend)</td><td><code>mypy app</code></td><td><b>30 files, no issues</b></td></tr>
-<tr><td>Frontend tests</td><td><code>npm test</code></td><td><b>62 passed</b> / 9 files</td></tr>
+<tr><td>Frontend tests</td><td><code>npm test</code></td><td><b>63 passed</b> / 9 files</td></tr>
 <tr><td>Types (frontend)</td><td><code>tsc -b</code></td><td><b>clean</b></td></tr>
 <tr><td>Lint (frontend)</td><td><code>eslint --max-warnings 0</code></td><td><b>clean</b></td></tr>
 <tr><td>Format (frontend)</td><td><code>prettier --check</code></td><td><b>clean</b></td></tr>
@@ -841,7 +850,7 @@ gantt
     dateFormat YYYY-MM-DD
     axisFormat %b %d
     section Backend
-    pytest total (291)          :done, a1, 2026-01-01, 29d
+    pytest total (323)          :done, a1, 2026-01-01, 29d
     routing + graph (43)        :done, a2, 2026-01-01, 5d
     ingest + worker (46)        :done, a3, 2026-01-01, 5d
     security + auth (22)        :done, a4, 2026-01-01, 3d
@@ -897,6 +906,29 @@ is a separate service on the same image with a different command.
 </details>
 
 <details>
+<summary><b>Public demo (strangers may look, nobody may touch)</b></summary>
+
+One flag turns the instance read-only and makes the unsafe versions of it unbootable:
+
+```bash
+AUTOPR_PUBLIC_MODE=true
+AUTOPR_ALLOWED_REPOS=your-org/your-demo-repo   # required: strangers must not add spend
+AUTOPR_GITHUB_DRY_RUN=true                     # required: no writes, ever
+AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR=10         # required: > 0
+AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY=100            # required: > 0
+AUTOPR_TRUSTED_PROXIES=127.0.0.1               # your proxy, so per-IP limits are per-visitor
+```
+
+What a visitor gets: the dashboard, the real review queue, the code previews, `Copy review`.
+What no visitor gets: approve, reject, or a single call to GitHub. The 403 is enforced server-side,
+so a hand-written `curl` is refused exactly like the hidden button.
+
+Seed it with synthetic data (`uv run python scripts/seed_demo.py`) rather than pointing it at
+repository history you would not publish.
+
+</details>
+
+<details>
 <summary><b>Bare metal (systemd)</b></summary>
 
 Two units from the same virtualenv: `uvicorn app.main:app --host 127.0.0.1 --port 8000`
@@ -919,6 +951,9 @@ These are the traps this repository actually hit, not hypotheticals.
 | App won't boot: *placeholder webhook secret* | Fail-fast validator | Set `AUTOPR_WEBHOOK_SECRET`, or `AUTOPR_ALLOW_INSECURE=1` for local dev |
 | App won't boot: *AUTOPR_API_TOKEN is empty* | New fail-fast: an unauthenticated `/approve` is an anonymous approver | Generate a token into `AUTOPR_API_TOKEN`, or `ALLOW_INSECURE=1` locally |
 | Webhook returns `{"status":"ignored","reason":"repo_not_allowed"}` | `AUTOPR_ALLOWED_REPOS` is set and does not list that repo | Add the repo, or clear the allowlist to accept all |
+| Webhook returns `429 {"detail":"quota exceeded"}` | A cost ceiling tripped (`quota_repo_hourly` / `quota_instance_daily`) — by design, not a bug | Raise the quota, or treat it as the bill guard doing its job |
+| Approve returns `403 read-only public demo` | `AUTOPR_PUBLIC_MODE=true` closes writes to everyone, operator included | Unset public mode on the instance that should be able to act |
+| Rate limiting does nothing behind a proxy | `X-Forwarded-For` is ignored unless the peer is trusted, so every request shares one bucket | Set `AUTOPR_TRUSTED_PROXIES` to your proxy's IP/CIDR |
 | Tests fail only on your machine (15 routing failures) | A `.env` with `AUTOPR_HANDOFF_MODE=true`; the suite now pins its posture before import | Fixed — see `tests/conftest.py`; if you add env-dependent tests, pin them there |
 | Approve returns **409** | Another approver holds the claim, or a previous approve crashed mid-post | The startup sweep resets stuck `APPROVED` rows to `FAILED`; approve again |
 | Approve returns `already_executed` | Exactly-once working as designed | Nothing to do |
@@ -964,7 +999,7 @@ the Settings token flow is the supported path.
 uv sync --extra dev
 uv run ruff check app tests scripts && uv run ruff format app tests scripts
 uv run mypy app
-uv run pytest -q                              # 291 tests, ~25 s
+uv run pytest -q                              # 323 tests, ~25 s
 cd frontend && npm run lint && npm run typecheck && npm test
 python docs/assets/generate.py                # figures must regenerate clean
 ```
@@ -1013,6 +1048,10 @@ Latest run: **6 figures, 218 text elements, 0 issues.**
   reproducible anywhere and pessimistic about nothing; a deployed run adds real network.
 - **LLM agents are mocked in tests.** The suite proves the *plumbing* deterministically; the
   quality of a review is not covered by a test, and cannot be.
+- **Public mode is a demo, not multi-tenancy.** It has one identity for everyone: read. There are no
+  accounts, no per-visitor quotas, and no isolation between what visitor A and visitor B can see —
+  it is your data, published read-only. The spend ceiling is per *repo* and per *instance* (the only
+  identities that exist), which is exactly why `public_mode` refuses to boot without an allowlist.
 - **No worker lease.** Two workers plus a genuinely >15-minute job can double LLM spend
   (never double side effects).
 - **SQLite is the default locally**, which serialises writes; the concurrency test proves the

@@ -69,6 +69,13 @@ services:
       # Empty = accept any repo able to deliver a signed webhook. Set it in .env
       # when the bot is installed on a repo strangers can open PRs on.
       AUTOPR_ALLOWED_REPOS: ${AUTOPR_ALLOWED_REPOS:-}
+      # Public-demo posture and its cost ceilings. All default to off/unset, so a
+      # private stack behaves exactly as before; setting AUTOPR_PUBLIC_MODE=true
+      # makes the boot fail unless the allowlist, dry-run and both quotas are set.
+      AUTOPR_PUBLIC_MODE: ${AUTOPR_PUBLIC_MODE:-false}
+      AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR: ${AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR:-0}
+      AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY: ${AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY:-0}
+      AUTOPR_TRUSTED_PROXIES: ${AUTOPR_TRUSTED_PROXIES:-}
       AUTOPR_CORS_ORIGINS: ${AUTOPR_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
       # Safety posture, passed through explicitly so the stack can never run in a

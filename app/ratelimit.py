@@ -20,6 +20,7 @@ jumps; ``now`` is injectable for deterministic tests.
 
 from __future__ import annotations
 
+import ipaddress
 import threading
 import time
 from dataclasses import dataclass
@@ -69,3 +70,57 @@ class FixedWindowRateLimiter:
                 return True, 0
             retry_after = int(self.window_s - (t - w.start)) + 1
             return False, retry_after
+
+
+def _is_trusted_proxy(addr: str, trusted: tuple[str, ...]) -> bool:
+    """Is `addr` one of the proxies whose X-Forwarded-For we are willing to believe?"""
+    if not trusted:
+        return False
+    try:
+        parsed = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    for entry in trusted:
+        try:
+            if "/" in entry:
+                if parsed in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif parsed == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            # A malformed entry must not silently widen trust to everything —
+            # it simply does not match, and the resolver falls back to the peer.
+            continue
+    return False
+
+
+def resolve_client_ip(peer: str, forwarded_for: str | None, trusted: tuple[str, ...] = ()) -> str:
+    """Return the address the limiter and audit log should key on.
+
+    `X-Forwarded-For` is client-writable, so honouring it unconditionally would
+    let one attacker mint a new rate-limit bucket per request — a limiter that
+    always says yes. The header is therefore only read when the *immediate peer*
+    is a declared trusted proxy, and even then we walk the chain from the right
+    (the end our own proxy appended to), stopping at the first untrusted hop.
+    Everything left of that point is attacker-supplied text.
+
+    With the default empty `trusted` list this is exactly `peer`, so behaviour on
+    an untrusted/direct deployment is unchanged.
+    """
+    if not peer:
+        return "unknown"
+    if not forwarded_for or not _is_trusted_proxy(peer, trusted):
+        return peer
+    hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
+    for hop in reversed(hops):
+        if _is_trusted_proxy(hop, trusted):
+            continue
+        try:
+            ipaddress.ip_address(hop)
+        except ValueError:
+            # Garbage in the header: fall back to the peer rather than trusting
+            # an arbitrary string as an identity.
+            return peer
+        return hop
+    # Every hop is a trusted proxy: the chain says nothing about the client.
+    return hops[0] if hops else peer

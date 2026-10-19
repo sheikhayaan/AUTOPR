@@ -86,6 +86,7 @@ curl -sS -X POST localhost:8000/webhook \
 | `200 {"status":"duplicate","job_id":N}` | Same delivery already seen (idempotent no-op). |
 | `200 {"status":"ignored","event":…}` | Not an actionable event. |
 | `200 {"status":"ignored","reason":"repo_not_allowed"}` | Signed, but the repo is absent from `AUTOPR_ALLOWED_REPOS`. No row, no enqueue, no LLM spend; the denial is logged with the repo name. |
+| `429 {"detail":"quota exceeded","reason":"quota_repo_hourly"}` | A cost ceiling tripped (`quota_repo_hourly` / `quota_instance_daily`). Carries `Retry-After`, and nothing was written — the check runs before the INSERT. A redelivery of work already held is exempt. |
 | `401 {"detail":"invalid signature"}` | HMAC mismatch. |
 | `503 {"detail":"queue temporarily unavailable"}` | Redis down — GitHub should retry. |
 
@@ -119,6 +120,7 @@ curl -sS -X POST localhost:8000/reviews/42/approve \
 | `409 {"detail":"decision was rejected"}` | Can't approve a rejected decision. |
 | `409 {"detail":"approval already in progress"}` | Another approve call claimed it first (double-click / retry / second operator). The claim is a compare-and-set, so the action is posted exactly once. Re-approve only after the winner reports `executed`, or after a failed/crashed one leaves the row `FAILED`. |
 | `404` | No such decision. |
+| `403 {"detail":"read-only public demo: approvals are disabled"}` | `AUTOPR_PUBLIC_MODE=true`. Closes approve **and** reject to every caller, operator token included — checked before the claim, so no state changes. |
 | `502 {"status":"action_failed",…}` | Live GitHub call failed; marked `FAILED`, retryable. |
 
 ### `POST /reviews/{id}/reject`
@@ -128,7 +130,7 @@ curl -sS -X POST localhost:8000/reviews/42/reject -H "Authorization: Bearer $AUT
 ```
 `200 {"status":"rejected",…}` · `409` if already executed · `409 {"detail":"approval
 already in progress; cannot reject"}` if an approval has claimed the row · `404` if
-not found.
+not found · `403` on a public instance, same as approve.
 
 ---
 

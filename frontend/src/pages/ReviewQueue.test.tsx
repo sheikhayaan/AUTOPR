@@ -132,4 +132,21 @@ describe('ReviewQueue', () => {
     expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /mark handled/i })).toBeInTheDocument()
   })
+
+  it('offers no mutating action in public demo mode', async () => {
+    // The API 403s approve/reject for everyone in public mode, so a rendered
+    // button could only ever produce an error toast. It must not be rendered.
+    pendingMock.mockResolvedValue({ count: 1, pending: [decision] })
+    renderQueue({
+      ...ctx,
+      stats: { ...ctx.stats!, config: { ...ctx.stats!.config, public_mode: true } },
+    })
+
+    expect(await screen.findByText(/read-only demo/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^reject$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /mark handled/i })).not.toBeInTheDocument()
+    // Visitors can still read it, and copy it — that is the whole point of a demo.
+    expect(screen.getByRole('button', { name: /copy review/i })).toBeInTheDocument()
+  })
 })

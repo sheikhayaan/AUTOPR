@@ -46,6 +46,23 @@ class Settings(BaseSettings):
     # delivery, so without this the allowlist-less bot spends LLM budget on
     # anyone's diff.
     allowed_repos: str = ""
+    # --- Public-instance posture -------------------------------------------
+    # "Anyone on the internet may use this instance, but only to look." One flag,
+    # four enforced invariants (see _enforce_secure_config): a non-empty
+    # allowlist, dry-run on, both quotas above zero, and — at request time —
+    # approve/reject answering 403 to everyone including the operator. Reads stay
+    # open on purpose: a demo nobody can read is not a demo.
+    public_mode: bool = False
+    # Soft cost ceilings, counted from pr_jobs.created_at. 0 = unlimited (the
+    # private-install default). A cap is a spend guard, not a correctness
+    # boundary: two racing deliveries may overshoot by one.
+    quota_jobs_per_repo_per_hour: int = 0
+    quota_jobs_total_per_day: int = 0
+    # Comma-separated IPs / CIDRs of reverse proxies whose X-Forwarded-For we
+    # trust. Empty (the default) means the header is ignored entirely, because
+    # an untrusted client can set it to any value and forge a fresh rate-limit
+    # bucket per request.
+    trusted_proxies: str = ""
     # Comma-separated CORS allowlist. A literal "*" allows any origin (demo). The
     # API sends no cookies (allow_credentials=False), so this bounds which sites'
     # JS may call it rather than guarding a credential.
@@ -231,6 +248,11 @@ class Settings(BaseSettings):
         """Parse allowed_repos into a lower-cased set; empty means "allow all"."""
         return frozenset(r.strip().lower() for r in self.allowed_repos.split(",") if r.strip())
 
+    @property
+    def trusted_proxy_list(self) -> tuple[str, ...]:
+        """Parse trusted_proxies into bare IP/CIDR strings for the IP resolver."""
+        return tuple(p.strip() for p in self.trusted_proxies.split(",") if p.strip())
+
     @model_validator(mode="after")
     def _enforce_secure_config(self) -> Settings:
         """Fail fast on the two settings that turn a misconfig into someone else's write.
@@ -245,6 +267,11 @@ class Settings(BaseSettings):
         `allow_insecure` is the deliberate, documented opt-out for local/dev/test
         runs (and it is what the test suite and the bench harness set).
         """
+        # public_mode is a claim about *exposure*, not a local convenience, so its
+        # invariants are checked even under the dev escape hatch: previewing the
+        # demo locally then exercises the same posture production will run.
+        if self.public_mode:
+            self._enforce_public_mode()
         if self.allow_insecure:
             return self
         if self.webhook_secret == _PLACEHOLDER_WEBHOOK_SECRET:
@@ -262,6 +289,36 @@ class Settings(BaseSettings):
                 "AUTOPR_ALLOW_INSECURE=1 for local/dev/tests."
             )
         return self
+
+    def _enforce_public_mode(self) -> None:
+        """A public instance must be safe by construction, not by operator care.
+
+        Every condition below is one the operator could otherwise forget, and
+        each one turns a demo into either a free LLM proxy for strangers or a
+        remote code-change service for anyone who guesses the URL. They raise
+        instead of warning for the same reason the token does: the failure is
+        silent at request time and only visible on a bill or a diff.
+        """
+        if not self.allowed_repo_set:
+            raise ValueError(
+                "AUTOPR_PUBLIC_MODE=1 needs AUTOPR_ALLOWED_REPOS. Without an "
+                "allowlist any repo that can deliver a signed webhook may spend "
+                "your LLM budget, and on a public instance that includes every "
+                "stranger who opens a fork PR."
+            )
+        if not self.github_dry_run:
+            raise ValueError(
+                "AUTOPR_PUBLIC_MODE=1 requires AUTOPR_GITHUB_DRY_RUN=true. A public "
+                "instance that can write to GitHub is a remote code-change service "
+                "for whoever reaches /approve; leave writes to a private deploy."
+            )
+        if self.quota_jobs_per_repo_per_hour <= 0 or self.quota_jobs_total_per_day <= 0:
+            raise ValueError(
+                "AUTOPR_PUBLIC_MODE=1 requires both quotas to be positive "
+                "(AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR, AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY). "
+                "They are the only thing standing between a stranger and your "
+                "per-token bill."
+            )
 
 
 @lru_cache(maxsize=1)

@@ -44,7 +44,8 @@ from app.observability import (
     render_metrics,
 )
 from app.queue import JobQueue, make_client
-from app.ratelimit import FixedWindowRateLimiter
+from app.quota import dedup_exists, quota_reason
+from app.ratelimit import FixedWindowRateLimiter, resolve_client_ip
 from app.routing import store
 from app.routing.github import get_github_client
 from app.routing.router import execute_decision
@@ -178,7 +179,21 @@ app.state.mutation_limiter = _mutation_limiter
 
 
 def _client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
+    """The caller's address, resolved through trusted proxies only.
+
+    Keying the limiter (and the audit log) on the socket peer is wrong behind a
+    reverse proxy — every request looks like the proxy, so one global bucket is
+    shared by the whole internet. Trusting X-Forwarded-For unconditionally is
+    worse: any client could mint a fresh bucket per request. resolve_client_ip
+    honours the header only when the peer is a declared proxy.
+    """
+    if request.client is None:
+        return None
+    return resolve_client_ip(
+        request.client.host,
+        request.headers.get("x-forwarded-for"),
+        settings.trusted_proxy_list,
+    )
 
 
 def require_api_token(authorization: str | None = Header(default=None)) -> None:
@@ -365,6 +380,22 @@ async def webhook(
         )
         return {"status": "ignored", "reason": "repo_not_allowed"}
 
+    # A repeat delivery of work we already hold costs nothing, so it is checked
+    # for duplicates first and never refused by a quota.
+    if not dedup_exists(db, pr.dedup_key):
+        reason = quota_reason(db, pr.repo)
+        if reason is not None:
+            log.warning(
+                "webhook.quota_exceeded",
+                reason=reason,
+                repo=pr.repo,
+                pr=pr.pr_number,
+                correlation_id=current_correlation_id(),
+            )
+            response.status_code = 429
+            response.headers["Retry-After"] = "60"
+            return {"detail": "quota exceeded", "reason": reason}
+
     # 3. Idempotent persist + enqueue. Duplicates are a no-op.
     from redis.exceptions import RedisError
 
@@ -459,7 +490,14 @@ def approve_review(
 
     A failed GitHub call marks the decision FAILED (not executed) so it can be
     retried by approving again.
+
+    On a public instance this endpoint is closed to *everyone*, operator token or
+    not: `public_mode` means "look, don't touch". Checked before the claim so no
+    state changes and no audit row is written for a request that cannot proceed.
     """
+    if settings.public_mode:
+        response.status_code = 403
+        return {"detail": "read-only public demo: approvals are disabled"}
     row, outcome = store.claim_approval(db, decision_id)
     if row is None:
         response.status_code = 404
@@ -544,8 +582,12 @@ def reject_review(
 
     The transition is a compare-and-set from PENDING, so rejecting cannot
     overwrite an approval that is already in flight (approve claimed it) or one
-    that has already fired.
+    that has already fired. On a public instance — like approve — nobody may
+    mutate the queue, operator token included.
     """
+    if settings.public_mode:
+        response.status_code = 403
+        return {"detail": "read-only public demo: approvals are disabled"}
     row, outcome = store.reject_pending(db, decision_id)
     if row is None:
         response.status_code = 404
@@ -628,6 +670,7 @@ def stats(db: Session = Depends(get_db)) -> dict:
             "auto_comment_max_risk": settings.auto_comment_max_risk,
             "github_web_url": settings.github_web_url,
             "handoff_mode": settings.handoff_mode,
+            "public_mode": settings.public_mode,
         },
     }
 

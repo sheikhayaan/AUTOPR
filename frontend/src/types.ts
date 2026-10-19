@@ -58,6 +58,11 @@ export interface StatsConfig {
   // Hand-off mode: AutoPR never writes to GitHub; every review is routed to a
   // human who acts via `review_url` under their own account.
   handoff_mode: boolean
+  // Read-only public demo: the API answers 403 to approve/reject for everyone,
+  // operator token included, so the UI hides those actions instead of offering
+  // a button whose only outcome is an error toast. Optional so older payloads
+  // (and the page tests) keep type-checking.
+  public_mode?: boolean
 }
 
 export interface JobCounts {

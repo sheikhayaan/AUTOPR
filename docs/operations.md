@@ -174,13 +174,18 @@ are supported, and the second is the one to prefer:
 uvicorn app.main:app --host 127.0.0.1 --port 8000   # never 0.0.0.0 without a proxy
 ```
 
-Behind a proxy or CDN, also pass real client IPs so per-IP limits mean anything —
-`_client_ip()` reads the socket peer, so without this every request looks like the
-proxy and the 120/min webhook budget becomes one global bucket:
+Behind a proxy or CDN, the per-IP limits are only as good as the client identity
+behind them. `X-Forwarded-For` is client-writable, so it is *ignored* unless the
+socket peer is a declared trusted proxy — honouring it unconditionally would let
+one attacker mint a fresh rate-limit bucket per request:
 
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+AUTOPR_TRUSTED_PROXIES=127.0.0.1            # nginx on the same host
+AUTOPR_TRUSTED_PROXIES=172.16.0.0/12        # a platform's egress range (CIDRs work)
 ```
+
+Leave it empty for a direct-to-internet deployment: the socket peer *is* the
+client, and the header is then correctly disregarded.
 
 **Three settings decide whether a stranger can affect you:**
 
@@ -198,7 +203,40 @@ before it touches the database, and the denial is logged with the repo name.
 
 ---
 
-## 9. Going live on GitHub (leaving dry-run)
+## 9. Public demo (read-only, for strangers)
+
+Wanted: a URL anyone can open that shows real pipeline output without letting
+them spend your money or touch a repository. One flag, three enforced
+preconditions, no new endpoints:
+
+```bash
+AUTOPR_PUBLIC_MODE=true
+AUTOPR_ALLOWED_REPOS=demo/repo        # else boot fails
+AUTOPR_GITHUB_DRY_RUN=true            # else boot fails
+AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR=10 # else boot fails
+AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY=100    # else boot fails
+AUTOPR_TRUSTED_PROXIES=127.0.0.1       # so limits are per visitor, not per proxy
+```
+
+| Behaviour | Private (default) | Public demo |
+|---|---|---|
+| `GET /jobs`, `/reviews/pending`, `/stats` | open | open — that is the demo |
+| `POST /reviews/{id}/approve`, `/reject` | token required | **403 for everyone**, token included |
+| GitHub writes | per `dry_run` | impossible (dry-run enforced) |
+| New work from an unlisted repo | allowed | `ignored`, no row, no spend |
+| New work past the quota | unlimited by default | `429` + `Retry-After` |
+
+The 403 is server-side, so a `curl` is refused exactly like the hidden button, and
+the dashboard hides the actions instead of offering a button whose only outcome is
+an error. Seed it with `uv run python scripts/seed_demo.py` — publish synthetic
+data, not repository history you would not want indexed.
+
+This is a demo, not multi-tenancy: there is one identity for everyone (read), and
+the quotas key on the only identities that exist — the repo and the instance.
+
+---
+
+## 10. Going live on GitHub (leaving dry-run)
 
 Dry-run is the default and the safe state. To let approvals post for real:
 
