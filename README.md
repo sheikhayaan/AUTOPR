@@ -514,7 +514,7 @@ AUTOPR/                                    15,841 lines · 106 files
 │   └── sandbox/{runner,verifier,policy}.py    450   container flags and caps
 ├── tests/                                  5,212   291 tests in 33 files
 ├── frontend/src/                           4,141   9 test files, 4 routes, typed client
-├── docs/                                           architecture · operations · api · 13 ADRs
+├── docs/                                           architecture · operations · api · 14 ADRs
 ├── docs/assets/                                    generate.py + 6 SVGs + bench_result.json
 ├── scripts/bench_api.py                             this README's latency numbers
 ├── scripts/load_test.py                             live load test, non-zero exit on regression
@@ -792,6 +792,16 @@ these two numbers rather than guessing, and refetches immediately when the query
 | Path handling | Snapshot extraction contained with `is_relative_to` | `sandbox/` + tests |
 | Supply chain | Pinned `uv.lock` + `package-lock.json`, no unpinned installs in CI | lockfiles |
 
+**What a stranger can still reach, by default.** Two defaults are open and one is fatal-if-empty:
+the read endpoints answer anonymously (`/jobs`, `/reviews/pending`, `/stats` expose repo names, PR
+numbers, authors and the exact comment text awaiting approval) because
+`AUTOPR_REQUIRE_AUTH_FOR_READS` is `false`; `AUTOPR_ALLOWED_REPOS` is empty, so any repo able to
+deliver a signed webhook can spend your LLM budget; and `AUTOPR_API_TOKEN` — the one setting whose
+absence makes `/approve` answer anyone — is now a **boot failure** rather than a warning. The first
+two are one-line `.env` changes, and [`operations.md § 8`](docs/operations.md#8-perimeter-exposing-the-api-to-the-internet)
+describes the deployment shape that removes the read path from the internet entirely instead of
+relying on a flag.
+
 **Threat model, stated plainly.** This is a single-operator, self-hosted tool. There is no
 login, no session, no per-user attribution — the bearer token belongs to one operator and
 the dashboard is meant to sit behind your own SSO proxy if you want attribution. Multi-tenant
@@ -804,8 +814,9 @@ isolation is *not* implemented, and the roadmap says so rather than implying oth
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
 <tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>291 passed, 5 skipped</b> (293 if a Docker daemon is running)</td></tr>
+<tr><td>Secure boot</td><td><code>uv run pytest tests/test_secure_boot.py</code></td><td><b>10 passed</b> &mdash; empty token and unlisted repo, each with a negative control that proves the test fails when the guard is removed</td></tr>
 <tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>87%</b> (gate 78%)</td></tr>
-<tr><td>Lint</td><td><code>ruff check app tests scripts</code></td><td><b>64 files, clean</b></td></tr>
+<tr><td>Lint</td><td><code>ruff check app tests scripts docs/assets/generate.py</code></td><td><b>68 files, clean</b></td></tr>
 <tr><td>Format</td><td><code>ruff format --check</code></td><td><b>clean</b></td></tr>
 <tr><td>Types (backend)</td><td><code>mypy app</code></td><td><b>30 files, no issues</b></td></tr>
 <tr><td>Frontend tests</td><td><code>npm test</code></td><td><b>62 passed</b> / 9 files</td></tr>
