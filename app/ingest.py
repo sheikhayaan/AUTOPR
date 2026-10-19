@@ -29,6 +29,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import execute_for_rowcount, insert_ignore_duplicates, supports_insert_returning
 from app.models import JobStatus, PRJob
 from app.observability import current_correlation_id
@@ -194,6 +195,23 @@ def parse_ci_event(event: str, payload: dict) -> PRPayload | None:
         event=event,
         ci_logs=logs,
     )
+
+
+def repo_is_allowed(repo: str) -> bool:
+    """Is this repository permitted to create work?
+
+    Empty `allowed_repos` means "allow every repo that can deliver a signed
+    webhook". That is the right default for a personal installation on private
+    repositories, where only the owner can open a PR. It is the wrong default on
+    a public repo: a fork PR is a *genuine* signed delivery, so without an
+    allowlist anyone on the internet can spend the operator's LLM budget by
+    opening a pull request. Matching is case-insensitive because GitHub logins
+    and repo names are, and a mismatch here would silently drop real work.
+    """
+    allowed = settings.allowed_repo_set
+    if not allowed:
+        return True
+    return repo.strip().lower() in allowed
 
 
 def parse_event(event: str, payload: dict) -> PRPayload | None:

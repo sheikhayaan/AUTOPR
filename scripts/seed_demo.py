@@ -29,6 +29,14 @@ from pathlib import Path
 # Allow running as `python scripts/seed_demo.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# The seed script imports app.db, which imports app.config, whose validator
+# demands a real webhook secret and a non-empty API token (or the explicit dev
+# escape hatch). Seeding a demo database is a dev action, so opt in here rather
+# than force every demo user to invent a token first.
+import os  # noqa: E402
+
+os.environ.setdefault("AUTOPR_ALLOW_INSECURE", "1")
+
 from sqlalchemy import delete  # noqa: E402
 
 from app.db import SessionLocal, engine  # noqa: E402

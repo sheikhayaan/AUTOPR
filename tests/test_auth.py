@@ -224,8 +224,21 @@ def test_placeholder_secret_allowed_when_insecure():
 
 
 def test_real_secret_passes_without_insecure():
-    s = Settings(webhook_secret="a-real-secret-value", allow_insecure=False)
+    """A real secret + token is a valid production posture, with no escape hatch."""
+    s = Settings(
+        webhook_secret="a-real-secret-value", api_token="a-real-token", allow_insecure=False
+    )
     assert s.webhook_secret == "a-real-secret-value"
+
+
+def test_real_secret_alone_is_no_longer_enough():
+    """The token is part of the security posture, not an optional extra.
+
+    Guarding the secret alone left the approval endpoint open: the bot would
+    accept anonymous approvals and write to the repository with its own token.
+    """
+    with pytest.raises(ValueError, match="AUTOPR_API_TOKEN is empty"):
+        Settings(webhook_secret="a-real-secret-value", allow_insecure=False)
 
 
 # --- CORS allowlist parsing --------------------------------------------------

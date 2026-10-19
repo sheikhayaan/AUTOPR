@@ -8,7 +8,7 @@
 **Every code-changing action, and every review above `low` risk, is queued for a human.**
 **Dry-run by default: out of the box, it touches nothing.**
 
-![tests](https://img.shields.io/badge/tests-280%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
+![tests](https://img.shields.io/badge/tests-291%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
 ![coverage](https://img.shields.io/badge/coverage-87%25-2ea043?style=flat-square)
 ![mypy](https://img.shields.io/badge/mypy-30%20files%20clean-2ea043?style=flat-square)
 ![ruff](https://img.shields.io/badge/ruff-64%20files%20clean-2ea043?style=flat-square)
@@ -44,7 +44,7 @@
 | 6 | [Core pipeline](#core-pipeline) | Job and decision state machines + per-stage guards |
 | 7 | [Data model](#data-model) | `erDiagram`, PK/FK, and where vectors vs rows live |
 | 8 | [Measured performance](#measured-performance) | 1,008 timed HTTP calls + 270 policy calls, ingestion breakdown, cold-start warning |
-| 9 | [Codebase composition](#codebase-composition) | 15,558 lines, counted at generation time |
+| 9 | [Codebase composition](#codebase-composition) | 15,841 lines, counted at generation time |
 | 10 | [Repository map](#repository-map) | The 15 files that carry the design |
 | 11 | [Quickstart](#quickstart) | Local two-terminal, Docker, and a 60-second smoke test |
 | 12 | [Configuration](#configuration) | All 42 settings with real defaults |
@@ -125,6 +125,7 @@ test that enforces the claim, so you can check it rather than trust it.
 | | 10 MB body cap enforced *before* hashing | ✅ |
 | | Dedup on `repo\|pr\|sha\|action` with a unique index | ✅ |
 | | Per-IP rate limits (webhook 120/min, mutations 30/min) | ✅ |
+| | Optional repo allowlist (deny before insert, zero spend) | ✅ |
 | **Reasoning** | `code_reviewer` — findings + risk score | ✅ |
 | | `test_generator` — draft tests, never executed | ✅ |
 | | `ci_monitor` — failure classification + diagnosis | ✅ |
@@ -456,16 +457,16 @@ python scripts/bench_api.py --scale 3       # 3x samples for a tighter p99
 ## Codebase composition
 
 <div align="center">
-<img src="./docs/assets/donut.svg" alt="Composition of 15,558 lines across 105 files" width="100%">
+<img src="./docs/assets/donut.svg" alt="Composition of 15,841 lines across 106 files" width="100%">
 </div>
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 5,067 | 30 | 32.6% |
-| Tests (`tests/`) | 4,999 | 32 | 32.1% |
-| Dashboard (`frontend/src`) | 4,141 | 37 | 26.6% |
-| Tooling (`scripts/`, `alembic/`) | 1,351 | 6 | 8.7% |
-| **Total** | **15,558** | **105** | **100%** |
+| Backend (`app/`) | 5,129 | 30 | 32.4% |
+| Tests (`tests/`) | 5,212 | 33 | 32.9% |
+| Dashboard (`frontend/src`) | 4,141 | 37 | 26.1% |
+| Tooling (`scripts/`, `alembic/`) | 1,359 | 6 | 8.6% |
+| **Total** | **15,841** | **106** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
 from the tree. Tests are 31% of the codebase, which is the ratio a service whose failure
@@ -483,7 +484,7 @@ mode is "writes to your repository" should have.
 <summary><b>Plain tree with line counts</b></summary>
 
 ```text
-AUTOPR/                                    15,558 lines · 105 files
+AUTOPR/                                    15,841 lines · 106 files
 ├── app/                                    5,067
 │   ├── main.py                               733   webhook + ops API + reads
 │   ├── worker.py                             413   consume · reclaim · reconcile
@@ -511,7 +512,7 @@ AUTOPR/                                    15,558 lines · 105 files
 │   │   ├── state.py                           64   the typed graph state
 │   │   └── llm.py                             41   Groq client factory
 │   └── sandbox/{runner,verifier,policy}.py    450   container flags and caps
-├── tests/                                  4,999   280 tests in 32 files
+├── tests/                                  5,212   291 tests in 33 files
 ├── frontend/src/                           4,141   9 test files, 4 routes, typed client
 ├── docs/                                           architecture · operations · api · 13 ADRs
 ├── docs/assets/                                    generate.py + 6 SVGs + bench_result.json
@@ -536,6 +537,7 @@ Docker only for the Compose stack or the CI-fix sandbox.
 ```bash
 cp .env.example .env
 python -c "import secrets; print(secrets.token_hex(32))"   # paste into AUTOPR_WEBHOOK_SECRET
+python -c "import secrets; print(secrets.token_hex(32))"   # paste into AUTOPR_API_TOKEN
 
 uv sync --extra dev
 uv run alembic upgrade head                       # the app refuses to boot unmigrated
@@ -590,7 +592,9 @@ curl -s -X POST localhost:8000/reviews/1/approve -H "Authorization: Bearer $AUTO
 ## Configuration
 
 42 settings, all `AUTOPR_`-prefixed, all defined in [`app/config.py`](app/config.py). The app
-**refuses to start** on the placeholder webhook secret unless `AUTOPR_ALLOW_INSECURE=1`.
+**refuses to start** on the placeholder webhook secret *or* an empty API token unless
+`AUTOPR_ALLOW_INSECURE=1`. Both are settings whose absence is silent at request time and
+catastrophic in effect: a forgeable webhook, and an `/approve` endpoint that answers anyone.
 
 <details open>
 <summary><b>Safety and behaviour — the ones that change what the bot can do</b></summary>
@@ -598,13 +602,14 @@ curl -s -X POST localhost:8000/reviews/1/approve -H "Authorization: Bearer $AUTO
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `AUTOPR_WEBHOOK_SECRET` | ✅ | *placeholder* | HMAC key for deliveries. Startup fails if left at the placeholder. |
-| `AUTOPR_API_TOKEN` | ⬜ | *(empty)* | Bearer token for approve/reject. Empty = no auth (dev only, loudly warned). |
+| `AUTOPR_API_TOKEN` | ✅ | *(empty)* | Bearer token for approve/reject. **Empty = startup failure** (dev override: `ALLOW_INSECURE`). |
 | `AUTOPR_GITHUB_DRY_RUN` | ⬜ | `true` | Master switch. `true` = record the intended call, touch nothing. |
 | `AUTOPR_HANDOFF_MODE` | ⬜ | `false` | `true` = never write; approvals return a PR link instead. |
 | `AUTOPR_AUTO_COMMENT_MAX_RISK` | ⬜ | `low` | Ceiling for *auto-posting comments*. Never covers code changes. |
 | `AUTOPR_GITHUB_TOKEN` | ⬜ | *(empty)* | Enables live reads/writes. Only meaningful with dry-run off. |
-| `AUTOPR_REQUIRE_AUTH_FOR_READS` | ⬜ | `false` | Gate `/jobs`, `/reviews`, `/stats` behind the token too. |
-| `AUTOPR_ALLOW_INSECURE` | ⬜ | `false` | Local/dev/test escape hatch for the placeholder secret. |
+| `AUTOPR_REQUIRE_AUTH_FOR_READS` | ⬜ | `false` | Gate `/jobs`, `/reviews`, `/stats` behind the token too. **Set true on any internet-reachable instance.** |
+| `AUTOPR_ALLOWED_REPOS` | ⬜ | *(empty)* | Comma-separated `owner/name` allowlist. Empty = any repo with a signed webhook. Set it on public repos, or fork PRs bill your LLM key. |
+| `AUTOPR_ALLOW_INSECURE` | ⬜ | `false` | Local/dev/test escape hatch for *both* fail-fast checks. |
 | `AUTOPR_CORS_ORIGINS` | ⬜ | local dev origins | Comma-separated allowlist for the dashboard origin. |
 
 </details>
@@ -779,7 +784,8 @@ these two numbers rather than guessing, and refetches immediately when the query
 | Authenticity | HMAC-SHA256 over the raw body, `compare_digest` (constant time) | `security.py::verify_signature()` |
 | Resource abuse | 10 MB body cap enforced **before** the HMAC; per-IP buckets; 429 + `Retry-After` | `main.py::_webhook_rl`, `ratelimit.py` |
 | Authorization | Bearer token for mutations, constant-time compare, optional for reads | `security.py::require_api_token()` |
-| Fail-fast config | Refuses to boot on the placeholder secret; warns on an empty token | `config.py` validator (`test_config.py`) |
+| Fail-fast config | Refuses to boot on the placeholder secret **or** an empty API token — neither misconfig can survive to request time | `config.py::_enforce_secure_config` (`test_secure_boot.py`) |
+| Cost containment | Optional `owner/name` allowlist; a signed delivery from an unlisted repo is answered `ignored` before the INSERT, so it costs no row, no enqueue and no LLM call | `ingest.py::repo_is_allowed`, `main.py` webhook route |
 | Write surface | The client exposes exactly one write: `post_issue_comment` | `tests/test_github_client.py::test_write_surface_is_comment_only` |
 | Human approval | CAS claim, terminal states, audit log with actor IP | `routing/store.py::claim_approval()` |
 | Code execution | `--network none`, non-root, read-only rootfs, memory/CPU/PID caps, timeout | `sandbox/runner.py` |
@@ -797,7 +803,7 @@ isolation is *not* implemented, and the roadmap says so rather than implying oth
 
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
-<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>280 passed, 5 skipped</b> in 18&ndash;28 s</td></tr>
+<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>291 passed, 5 skipped</b> (293 if a Docker daemon is running)</td></tr>
 <tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>87%</b> (gate 78%)</td></tr>
 <tr><td>Lint</td><td><code>ruff check app tests scripts</code></td><td><b>64 files, clean</b></td></tr>
 <tr><td>Format</td><td><code>ruff format --check</code></td><td><b>clean</b></td></tr>
@@ -812,9 +818,10 @@ isolation is *not* implemented, and the roadmap says so rather than implying oth
 <tr><td>Live GitHub contract</td><td><code>tests/test_github_live.py</code></td><td>3 tests, weekly + on demand</td></tr>
 </table>
 
-The 5 skips are deliberate and named: 2 need Docker plus the sandbox image (they run in the
-dedicated CI job, which greps its own output and fails on `skipped`), 3 need a real GitHub
-token. The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
+The 5 skips are deliberate and named: **3** need a real GitHub token, and **2** are the
+Docker-gated sandbox tests, which skip when no daemon is present (they run in the dedicated CI
+job, which greps its own output and fails on `skipped`). With Docker running locally the count
+becomes 293 passed / 3 skipped — both numbers are honest, which one you see depends on your host. The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
 `tests/conftest.py`, so a developer's `.env` cannot change what it asserts.
 
 ```mermaid
@@ -823,7 +830,7 @@ gantt
     dateFormat YYYY-MM-DD
     axisFormat %b %d
     section Backend
-    pytest total (280)          :done, a1, 2026-01-01, 28d
+    pytest total (291)          :done, a1, 2026-01-01, 29d
     routing + graph (43)        :done, a2, 2026-01-01, 5d
     ingest + worker (46)        :done, a3, 2026-01-01, 5d
     security + auth (22)        :done, a4, 2026-01-01, 3d
@@ -899,6 +906,8 @@ These are the traps this repository actually hit, not hypotheticals.
 | Webhook returns **401** on a delivery you sent | Signature mismatch — you signed a re-serialised body, not the raw bytes | Sign the exact bytes you send; GitHub always does |
 | App won't boot: *"database schema is not migrated"* | `assert_schema_ready()` — Alembic never ran | `uv run alembic upgrade head` |
 | App won't boot: *placeholder webhook secret* | Fail-fast validator | Set `AUTOPR_WEBHOOK_SECRET`, or `AUTOPR_ALLOW_INSECURE=1` for local dev |
+| App won't boot: *AUTOPR_API_TOKEN is empty* | New fail-fast: an unauthenticated `/approve` is an anonymous approver | Generate a token into `AUTOPR_API_TOKEN`, or `ALLOW_INSECURE=1` locally |
+| Webhook returns `{"status":"ignored","reason":"repo_not_allowed"}` | `AUTOPR_ALLOWED_REPOS` is set and does not list that repo | Add the repo, or clear the allowlist to accept all |
 | Tests fail only on your machine (15 routing failures) | A `.env` with `AUTOPR_HANDOFF_MODE=true`; the suite now pins its posture before import | Fixed — see `tests/conftest.py`; if you add env-dependent tests, pin them there |
 | Approve returns **409** | Another approver holds the claim, or a previous approve crashed mid-post | The startup sweep resets stuck `APPROVED` rows to `FAILED`; approve again |
 | Approve returns `already_executed` | Exactly-once working as designed | Nothing to do |
@@ -944,7 +953,7 @@ the Settings token flow is the supported path.
 uv sync --extra dev
 uv run ruff check app tests scripts && uv run ruff format app tests scripts
 uv run mypy app
-uv run pytest -q                              # 280 tests, ~18 s
+uv run pytest -q                              # 291 tests, ~25 s
 cd frontend && npm run lint && npm run typecheck && npm test
 python docs/assets/generate.py                # figures must regenerate clean
 ```

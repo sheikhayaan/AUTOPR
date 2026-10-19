@@ -160,13 +160,52 @@ is reclaimed via `XAUTOCLAIM` on the next worker's next loop.
 
 ---
 
-## 8. Going live on GitHub (leaving dry-run)
+## 8. Perimeter: exposing the API to the internet
+
+GitHub must reach `/webhook`, and nothing else needs to be reachable. Two shapes
+are supported, and the second is the one to prefer:
+
+| Shape | Exposure | Notes |
+|---|---|---|
+| VPS with a proxy | whole app behind nginx | Set `AUTOPR_REQUIRE_AUTH_FOR_READS=true`, or only route `/webhook` |
+| **Loopback + tunnel** | `uvicorn --host 127.0.0.1`, tunnel ingress routes `/webhook` only | Read endpoints then have no internet path at all |
+
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000   # never 0.0.0.0 without a proxy
+```
+
+Behind a proxy or CDN, also pass real client IPs so per-IP limits mean anything —
+`_client_ip()` reads the socket peer, so without this every request looks like the
+proxy and the 120/min webhook budget becomes one global bucket:
+
+```bash
+uvicorn app.main:app --host 127.0.0.1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+```
+
+**Three settings decide whether a stranger can affect you:**
+
+| Setting | Default | Set it when |
+|---|---|---|
+| `AUTOPR_API_TOKEN` | *required* (boot fails when empty) | always — it is the approval credential |
+| `AUTOPR_REQUIRE_AUTH_FOR_READS` | `false` | the instance is reachable from the internet |
+| `AUTOPR_ALLOWED_REPOS` | empty (allow all) | the bot is installed on a **public** repo |
+
+The allowlist is a *cost* control, not an authentication control: forging a webhook
+is impossible without the secret, but on a public repo a stranger opening a fork PR
+produces a genuinely signed delivery — and therefore four LLM calls on your key.
+With an allowlist, that delivery is answered `{"status":"ignored","reason":"repo_not_allowed"}`
+before it touches the database, and the denial is logged with the repo name.
+
+---
+
+## 9. Going live on GitHub (leaving dry-run)
 
 Dry-run is the default and the safe state. To let approvals post for real:
 
 1. Set `AUTOPR_GITHUB_TOKEN` (a fine-grained PAT / app token with only the needed
    scopes) and `AUTOPR_GITHUB_DRY_RUN=false`.
-2. Confirm `AUTOPR_API_TOKEN` is set (so `approve`/`reject` are authenticated).
+2. Confirm `AUTOPR_API_TOKEN` is set — the process will not start without it, which
+   is the point: an unauthenticated `/approve` is an anonymous approver.
 3. Approvals now perform real writes. **Code-changing actions remain
    human-gated regardless** — leaving dry-run does not change the approval
    requirement, only whether an approved action actually reaches GitHub.

@@ -28,16 +28,24 @@ class Settings(BaseSettings):
 
     # --- Security ---
     # GitHub webhook HMAC secret. Refuses to start at the placeholder value unless
-    # allow_insecure is set (see _enforce_secure_secret).
+    # allow_insecure is set (see _enforce_secure_config).
     webhook_secret: str = _PLACEHOLDER_WEBHOOK_SECRET
-    # Bearer token for the mutating/ops API (approve/reject). Empty => auth is a
-    # no-op (dev convenience) with a loud startup warning; set it in any real
-    # deployment. Compared in constant time (see app.security.verify_bearer_token).
+    # Bearer token for the mutating/ops API (approve/reject). Also fails fast when
+    # empty unless allow_insecure is set: an unauthenticated /approve is not a
+    # convenience, it is "anyone who can reach the API may write to your repo".
+    # Compared in constant time (see app.security.verify_bearer_token).
     api_token: str = ""
     # When true, the read endpoints (/stats, /jobs, /reviews*) also require the
     # bearer token. Default false so the read-only dashboard demos without auth,
     # while the write path (approve/reject) is always protected once a token is set.
+    # Set it to true on any instance reachable from the internet.
     require_auth_for_reads: bool = False
+    # Comma-separated repo allowlist ("owner/name"). Empty = every repo that can
+    # deliver a signed webhook may create work. Set it when the bot is installed
+    # on a repo strangers can open PRs on: a fork PR there is a genuine signed
+    # delivery, so without this the allowlist-less bot spends LLM budget on
+    # anyone's diff.
+    allowed_repos: str = ""
     # Comma-separated CORS allowlist. A literal "*" allows any origin (demo). The
     # API sends no cookies (allow_credentials=False), so this bounds which sites'
     # JS may call it rather than guarding a credential.
@@ -218,20 +226,40 @@ class Settings(BaseSettings):
         scheme = parts.scheme or "https"
         return f"{scheme}://{host}"
 
+    @property
+    def allowed_repo_set(self) -> frozenset[str]:
+        """Parse allowed_repos into a lower-cased set; empty means "allow all"."""
+        return frozenset(r.strip().lower() for r in self.allowed_repos.split(",") if r.strip())
+
     @model_validator(mode="after")
-    def _enforce_secure_secret(self) -> Settings:
-        """Fail fast: refuse to start with the placeholder webhook secret.
+    def _enforce_secure_config(self) -> Settings:
+        """Fail fast on the two settings that turn a misconfig into someone else's write.
 
         A service that boots with a well-known shared secret is not secure — any
-        caller could forge webhook signatures. We turn that latent misconfig into
-        an immediate, loud startup failure. allow_insecure is the deliberate,
-        documented opt-out for local/dev/test runs.
+        caller could forge webhook signatures. And a service that boots with no
+        API token answers `/reviews/{id}/approve` to anyone who can reach it, so
+        the human gate becomes decorative. Both are latent misconfigs that fail
+        silently at request time; we turn them into immediate, loud startup
+        failures instead.
+
+        `allow_insecure` is the deliberate, documented opt-out for local/dev/test
+        runs (and it is what the test suite and the bench harness set).
         """
-        if not self.allow_insecure and self.webhook_secret == _PLACEHOLDER_WEBHOOK_SECRET:
+        if self.allow_insecure:
+            return self
+        if self.webhook_secret == _PLACEHOLDER_WEBHOOK_SECRET:
             raise ValueError(
                 "AUTOPR_WEBHOOK_SECRET is still the placeholder. Generate a real "
                 'secret (python -c "import secrets; print(secrets.token_hex(32))") '
                 "and set it, or set AUTOPR_ALLOW_INSECURE=1 for local/dev/tests."
+            )
+        if not self.api_token.strip():
+            raise ValueError(
+                "AUTOPR_API_TOKEN is empty, so /reviews/{id}/approve would accept "
+                "anonymous approvals and let any caller make this bot write to your "
+                'repository. Generate one with: python -c "import secrets; '
+                'print(secrets.token_hex(32))" and set it, or set '
+                "AUTOPR_ALLOW_INSECURE=1 for local/dev/tests."
             )
         return self
 

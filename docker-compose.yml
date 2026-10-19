@@ -66,6 +66,9 @@ services:
       #   python -c "import secrets; print(secrets.token_hex(32))"
       AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:?set AUTOPR_WEBHOOK_SECRET in .env}
       AUTOPR_API_TOKEN: ${AUTOPR_API_TOKEN:?set AUTOPR_API_TOKEN in .env}
+      # Empty = accept any repo able to deliver a signed webhook. Set it in .env
+      # when the bot is installed on a repo strangers can open PRs on.
+      AUTOPR_ALLOWED_REPOS: ${AUTOPR_ALLOWED_REPOS:-}
       AUTOPR_CORS_ORIGINS: ${AUTOPR_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
       # Safety posture, passed through explicitly so the stack can never run in a
@@ -113,9 +116,14 @@ services:
       AUTOPR_DATABASE_URL: postgresql+psycopg://autopr:autopr@postgres:5432/autopr
       AUTOPR_REDIS_URL: redis://redis:6379/0
       AUTOPR_QDRANT_URL: http://qdrant:6333
-      # Worker imports app.config too, so it needs a valid (non-placeholder)
-      # secret to pass the fail-fast validator. Groq key powers the LLM agents.
+      # Worker imports app.config too, so it must satisfy the same fail-fast
+      # validator as the API: a real webhook secret AND a non-empty API token.
+      # Passing the token here is not about the worker *using* it — it is about
+      # the two processes agreeing on what a valid production posture means.
+      # Groq key powers the LLM agents.
       AUTOPR_WEBHOOK_SECRET: ${AUTOPR_WEBHOOK_SECRET:?set AUTOPR_WEBHOOK_SECRET in .env}
+      AUTOPR_API_TOKEN: ${AUTOPR_API_TOKEN:?set AUTOPR_API_TOKEN in .env}
+      AUTOPR_ALLOWED_REPOS: ${AUTOPR_ALLOWED_REPOS:-}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
       AUTOPR_HANDOFF_MODE: ${AUTOPR_HANDOFF_MODE:-false}
       AUTOPR_GITHUB_DRY_RUN: ${AUTOPR_GITHUB_DRY_RUN:-true}

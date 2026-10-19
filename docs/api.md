@@ -18,7 +18,8 @@ Two independent mechanisms:
   `X-Hub-Signature-256: sha256=<hmac>` over the raw body, keyed by
   `AUTOPR_WEBHOOK_SECRET`. Verified in constant time; failure is `401`.
 - **Ops writes — bearer token.** `approve`/`reject` require
-  `Authorization: Bearer <AUTOPR_API_TOKEN>` whenever a token is configured.
+  `Authorization: Bearer <AUTOPR_API_TOKEN>`. The token is **required**: the app refuses to
+  start with an empty one, so the approval endpoints are never anonymously reachable.
   Empty token = unauthenticated dev no-op (with a startup warning). Read
   endpoints are unauthenticated unless `AUTOPR_REQUIRE_AUTH_FOR_READS=true`.
 
@@ -84,6 +85,7 @@ curl -sS -X POST localhost:8000/webhook \
 | `200 {"status":"queued","job_id":N}` | Accepted and enqueued. |
 | `200 {"status":"duplicate","job_id":N}` | Same delivery already seen (idempotent no-op). |
 | `200 {"status":"ignored","event":…}` | Not an actionable event. |
+| `200 {"status":"ignored","reason":"repo_not_allowed"}` | Signed, but the repo is absent from `AUTOPR_ALLOWED_REPOS`. No row, no enqueue, no LLM spend; the denial is logged with the repo name. |
 | `401 {"detail":"invalid signature"}` | HMAC mismatch. |
 | `503 {"detail":"queue temporarily unavailable"}` | Redis down — GitHub should retry. |
 

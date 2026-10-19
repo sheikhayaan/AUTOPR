@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import SessionLocal, assert_schema_ready, engine
-from app.ingest import ingest, parse_event
+from app.ingest import ingest, parse_event, repo_is_allowed
 from app.models import DecisionStatus, JobStatus, PRJob, ReviewDecision
 from app.observability import (
     CORRELATION_ID_HEADER,
@@ -39,6 +39,7 @@ from app.observability import (
     bind_correlation_id,
     clear_correlation_id,
     configure_logging,
+    current_correlation_id,
     new_correlation_id,
     render_metrics,
 )
@@ -348,6 +349,21 @@ async def webhook(
     pr = parse_event(x_github_event or "pull_request", payload)
     if pr is None:
         return {"status": "ignored", "event": x_github_event}
+
+    # A signed delivery from a repo we were not asked to serve still costs four
+    # LLM calls. Refuse it before the INSERT so no row, no stream message and no
+    # spend happen — and log the repo, so an operator can tell "someone is
+    # spamming us" apart from "my allowlist is wrong".
+    if not repo_is_allowed(pr.repo):
+        log.warning(
+            "webhook.repo_not_allowed",
+            repo=pr.repo,
+            pr=pr.pr_number,
+            # `event` would collide with structlog's own positional event kwarg.
+            gh_event=pr.event,
+            correlation_id=current_correlation_id(),
+        )
+        return {"status": "ignored", "reason": "repo_not_allowed"}
 
     # 3. Idempotent persist + enqueue. Duplicates are a no-op.
     from redis.exceptions import RedisError
