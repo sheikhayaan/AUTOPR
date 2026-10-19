@@ -8,7 +8,7 @@
 **Every code-changing action, and every review above `low` risk, is queued for a human.**
 **Dry-run by default: out of the box, it touches nothing.**
 
-![tests](https://img.shields.io/badge/tests-264%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
+![tests](https://img.shields.io/badge/tests-280%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
 ![coverage](https://img.shields.io/badge/coverage-87%25-2ea043?style=flat-square)
 ![mypy](https://img.shields.io/badge/mypy-30%20files%20clean-2ea043?style=flat-square)
 ![ruff](https://img.shields.io/badge/ruff-64%20files%20clean-2ea043?style=flat-square)
@@ -44,7 +44,7 @@
 | 6 | [Core pipeline](#core-pipeline) | Job and decision state machines + per-stage guards |
 | 7 | [Data model](#data-model) | `erDiagram`, PK/FK, and where vectors vs rows live |
 | 8 | [Measured performance](#measured-performance) | 1,008 timed HTTP calls + 270 policy calls, ingestion breakdown, cold-start warning |
-| 9 | [Codebase composition](#codebase-composition) | 15,283 lines, counted at generation time |
+| 9 | [Codebase composition](#codebase-composition) | 15,558 lines, counted at generation time |
 | 10 | [Repository map](#repository-map) | The 15 files that carry the design |
 | 11 | [Quickstart](#quickstart) | Local two-terminal, Docker, and a 60-second smoke test |
 | 12 | [Configuration](#configuration) | All 42 settings with real defaults |
@@ -456,16 +456,16 @@ python scripts/bench_api.py --scale 3       # 3x samples for a tighter p99
 ## Codebase composition
 
 <div align="center">
-<img src="./docs/assets/donut.svg" alt="Composition of 15,283 lines across 104 files" width="100%">
+<img src="./docs/assets/donut.svg" alt="Composition of 15,558 lines across 105 files" width="100%">
 </div>
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 5,067 | 30 | 33.2% |
-| Tests (`tests/`) | 4,731 | 31 | 31.0% |
-| Dashboard (`frontend/src`) | 4,141 | 37 | 27.1% |
-| Tooling (`scripts/`, `alembic/`) | 1,344 | 6 | 8.8% |
-| **Total** | **15,283** | **104** | **100%** |
+| Backend (`app/`) | 5,067 | 30 | 32.6% |
+| Tests (`tests/`) | 4,999 | 32 | 32.1% |
+| Dashboard (`frontend/src`) | 4,141 | 37 | 26.6% |
+| Tooling (`scripts/`, `alembic/`) | 1,351 | 6 | 8.7% |
+| **Total** | **15,558** | **105** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
 from the tree. Tests are 31% of the codebase, which is the ratio a service whose failure
@@ -483,7 +483,7 @@ mode is "writes to your repository" should have.
 <summary><b>Plain tree with line counts</b></summary>
 
 ```text
-AUTOPR/                                    15,283 lines · 104 files
+AUTOPR/                                    15,558 lines · 105 files
 ├── app/                                    5,067
 │   ├── main.py                               733   webhook + ops API + reads
 │   ├── worker.py                             413   consume · reclaim · reconcile
@@ -511,7 +511,7 @@ AUTOPR/                                    15,283 lines · 104 files
 │   │   ├── state.py                           64   the typed graph state
 │   │   └── llm.py                             41   Groq client factory
 │   └── sandbox/{runner,verifier,policy}.py    450   container flags and caps
-├── tests/                                  4,731   264 tests in 30 files
+├── tests/                                  4,999   280 tests in 32 files
 ├── frontend/src/                           4,141   9 test files, 4 routes, typed client
 ├── docs/                                           architecture · operations · api · 13 ADRs
 ├── docs/assets/                                    generate.py + 6 SVGs + bench_result.json
@@ -797,7 +797,7 @@ isolation is *not* implemented, and the roadmap says so rather than implying oth
 
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
-<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>264 passed, 5 skipped</b> in 9.7 s</td></tr>
+<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>280 passed, 5 skipped</b> in 18&ndash;28 s</td></tr>
 <tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>87%</b> (gate 78%)</td></tr>
 <tr><td>Lint</td><td><code>ruff check app tests scripts</code></td><td><b>64 files, clean</b></td></tr>
 <tr><td>Format</td><td><code>ruff format --check</code></td><td><b>clean</b></td></tr>
@@ -807,6 +807,7 @@ isolation is *not* implemented, and the roadmap says so rather than implying oth
 <tr><td>Lint (frontend)</td><td><code>eslint --max-warnings 0</code></td><td><b>clean</b></td></tr>
 <tr><td>Format (frontend)</td><td><code>prettier --check</code></td><td><b>clean</b></td></tr>
 <tr><td>Migrations</td><td>alembic up → down → up on real Postgres</td><td><b>green in CI</b></td></tr>
+<tr><td>Docs &amp; figures</td><td><code>pytest tests/test_docs_assets.py</code></td><td><b>16 passed</b> — figures match the tree, audit is clean, numbers do not drift</td></tr>
 <tr><td>Sandbox boundary</td><td>Docker-gated tests, job <b>fails if they skip</b></td><td><b>2 passed in CI</b></td></tr>
 <tr><td>Live GitHub contract</td><td><code>tests/test_github_live.py</code></td><td>3 tests, weekly + on demand</td></tr>
 </table>
@@ -822,7 +823,7 @@ gantt
     dateFormat YYYY-MM-DD
     axisFormat %b %d
     section Backend
-    pytest total (264)          :done, a1, 2026-01-01, 26d
+    pytest total (280)          :done, a1, 2026-01-01, 28d
     routing + graph (43)        :done, a2, 2026-01-01, 5d
     ingest + worker (46)        :done, a3, 2026-01-01, 5d
     security + auth (22)        :done, a4, 2026-01-01, 3d
@@ -943,7 +944,7 @@ the Settings token flow is the supported path.
 uv sync --extra dev
 uv run ruff check app tests scripts && uv run ruff format app tests scripts
 uv run mypy app
-uv run pytest -q                              # 264 tests, ~10 s
+uv run pytest -q                              # 280 tests, ~18 s
 cd frontend && npm run lint && npm run typecheck && npm test
 python docs/assets/generate.py                # figures must regenerate clean
 ```
@@ -958,6 +959,11 @@ python docs/assets/generate.py                # figures must regenerate clean
    `docs/decisions/` first.
 5. **The gate is not configurable.** Do not add a flag that auto-applies code changes.
 6. **Numbers in the README come from a command.** If you cannot re-run it, do not print it.
+   `tests/test_docs_assets.py` enforces this: it re-counts the tree, re-audits every
+   figure, re-reads the bench artifact, and fails if the prose has drifted from any of them.
+   Any change under `app/`, `tests/`, `frontend/src/`, `scripts/` or `alembic/` therefore
+   needs `python docs/assets/generate.py` plus the refreshed composition table — the test
+   prints the exact numbers it expects, so the loop is mechanical rather than guesswork.
 
 ---
 

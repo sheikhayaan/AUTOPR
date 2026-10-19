@@ -6,6 +6,20 @@ and `uv`-managed Python 3.11.
 
 ---
 
+## Before you deploy: read the measured numbers
+
+The README's latency table is produced by `python scripts/bench_api.py`, which drives
+the real ASGI app with `fakeredis` and in-memory SQLite. It is **in-process**: no
+socket, no TLS, no network. Treat the p50s as a floor, and budget for a cold start
+(≈1–3 s on the first webhook after boot) unless you keep a machine warm.
+
+If those numbers matter to a capacity decision, re-run the bench on the host class you
+intend to use and compare against [`assets/bench_result.json`](assets/bench_result.json)
+— the histogram in the README is drawn from that file, so a fresh run both re-measures
+and re-draws.
+
+---
+
 ## Deployments at a glance
 
 | Environment | DB | Queue | How | Secrets from |

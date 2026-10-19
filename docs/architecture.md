@@ -11,6 +11,25 @@ alternatives rejected), see [`decisions/`](decisions/).
 
 ---
 
+## Figures
+
+Two diagrams in this repo are **generated from measured data** rather than drawn by
+hand, and the build fails if their layout collides or if the README drifts from them:
+
+| Figure | Shows | Source |
+| --- | --- | --- |
+| [`assets/architecture.svg`](assets/architecture.svg) | the four lanes, end to end | static, audited |
+| [`assets/pipeline.svg`](assets/pipeline.svg) | ingest→gate and CI-failure→repair, with measured stage times | `assets/bench_result.json` |
+| [`assets/donut.svg`](assets/donut.svg) | codebase composition, re-counted at build time | `assets/generate.py::line_counts()` |
+| [`assets/histogram.svg`](assets/histogram.svg) | latency distribution over 1,008 HTTP calls | `assets/bench_result.json` |
+| [`assets/repo-tree.svg`](assets/repo-tree.svg) | the fifteen files that carry the design | static, audited |
+| [`assets/banner.svg`](assets/banner.svg) | headline stats | `assets/bench_result.json` |
+
+Regenerate with `python docs/assets/generate.py`; the Mermaid copies below stay in
+the document so the diagrams remain editable as text.
+
+---
+
 ## 1. Component map
 
 ```mermaid
