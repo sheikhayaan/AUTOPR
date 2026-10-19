@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900" role="img" aria-label="Repository map">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#070a12"/><stop offset="55%" stop-color="#05070d"/>
+      <stop offset="100%" stop-color="#04060b"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee"/><stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0.35"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.20"/>
+      <stop offset="60%" stop-color="#3b82f6" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#05070d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="halo2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#05070d" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-80%" y="-300%" width="260%" height="700%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 H0 V40" fill="none" stroke="#111a26" stroke-width="1"/>
+    </pattern>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6"
+            markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5a72"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="900" fill="url(#bg)"/>
+  <rect width="1200" height="900" fill="url(#grid)" opacity="0.55"/>
+  <text x="60.0" y="54.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="26" font-weight="700" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Repository map</text>
+  <text x="60.0" y="78.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">Fifteen files that carry the design; everything else is support.</text>
+  <rect x="158.0" y="110.0" width="184.0" height="44.0" rx="10" fill="#0b1626" fill-opacity="1.0" stroke="url(#edge)" stroke-width="1.6"/>
+  <text x="250.0" y="140.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#e8eefc" fill-opacity="1.0" text-anchor="middle">AUTOPR/</text>
+  <path d="M250.0,154.0 L250.0,174.0 L120.0,174.0 L120.0,194.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="194.0" r="3.4" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="140.0" y="200.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/main.py</text>
+  <text x="452.0" y="200.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">webhook + ops API; token-gated reads</text>
+  <path d="M250.0,154.0 L250.0,195.0 L120.0,195.0 L120.0,236.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="236.0" r="3.4" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="140.0" y="242.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/worker.py</text>
+  <text x="452.0" y="242.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">consume · reclaim · reconcile</text>
+  <path d="M250.0,154.0 L250.0,216.0 L120.0,216.0 L120.0,278.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="278.0" r="3.4" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="140.0" y="284.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/ingest.py</text>
+  <text x="452.0" y="284.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">idempotent persist, then CAS publish</text>
+  <path d="M250.0,154.0 L250.0,237.0 L120.0,237.0 L120.0,320.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="320.0" r="3.4" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="140.0" y="326.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/queue.py</text>
+  <text x="452.0" y="326.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">Streams, consumer group, XAUTOCLAIM</text>
+  <path d="M250.0,154.0 L250.0,258.0 L120.0,258.0 L120.0,362.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="362.0" r="3.4" fill="#a855f7" filter="url(#glow)"/>
+  <text x="140.0" y="368.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/routing/policy.py</text>
+  <text x="452.0" y="368.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">pure gate: risk vs ceiling</text>
+  <path d="M250.0,154.0 L250.0,279.0 L120.0,279.0 L120.0,404.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="404.0" r="3.4" fill="#a855f7" filter="url(#glow)"/>
+  <text x="140.0" y="410.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/routing/store.py</text>
+  <text x="452.0" y="410.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">claim_approval() CAS, ledger reads</text>
+  <path d="M250.0,154.0 L250.0,300.0 L120.0,300.0 L120.0,446.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="446.0" r="3.4" fill="#a855f7" filter="url(#glow)"/>
+  <text x="140.0" y="452.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/routing/github.py</text>
+  <text x="452.0" y="452.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">reader + dry-run write client</text>
+  <path d="M250.0,154.0 L250.0,321.0 L120.0,321.0 L120.0,488.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="488.0" r="3.4" fill="#10b981" filter="url(#glow)"/>
+  <text x="140.0" y="494.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/agents/graph.py</text>
+  <text x="452.0" y="494.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">6-node LangGraph wiring</text>
+  <path d="M250.0,154.0 L250.0,342.0 L120.0,342.0 L120.0,530.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="530.0" r="3.4" fill="#10b981" filter="url(#glow)"/>
+  <text x="140.0" y="536.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/agents/fix_verifier.py</text>
+  <text x="452.0" y="536.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">runs the patch in Docker</text>
+  <path d="M250.0,154.0 L250.0,363.0 L120.0,363.0 L120.0,572.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="572.0" r="3.4" fill="#10b981" filter="url(#glow)"/>
+  <text x="140.0" y="578.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/sandbox/runner.py</text>
+  <text x="452.0" y="578.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">container flags, output caps</text>
+  <path d="M250.0,154.0 L250.0,384.0 L120.0,384.0 L120.0,614.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="614.0" r="3.4" fill="#f43f5e" filter="url(#glow)"/>
+  <text x="140.0" y="620.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/security.py</text>
+  <text x="452.0" y="620.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">constant-time HMAC + bearer</text>
+  <path d="M250.0,154.0 L250.0,405.0 L120.0,405.0 L120.0,656.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="656.0" r="3.4" fill="#f43f5e" filter="url(#glow)"/>
+  <text x="140.0" y="662.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">app/db.py</text>
+  <text x="452.0" y="662.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">INSERT..ON CONFLICT, schema guard</text>
+  <path d="M250.0,154.0 L250.0,426.0 L120.0,426.0 L120.0,698.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="698.0" r="3.4" fill="#f59e0b" filter="url(#glow)"/>
+  <text x="140.0" y="704.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">tests/test_e2e_flow.py</text>
+  <text x="452.0" y="704.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">the whole path, no seam mocks</text>
+  <path d="M250.0,154.0 L250.0,447.0 L120.0,447.0 L120.0,740.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="740.0" r="3.4" fill="#f59e0b" filter="url(#glow)"/>
+  <text x="140.0" y="746.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">tests/test_idempotency.py</text>
+  <text x="452.0" y="746.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">dedup + concurrent race</text>
+  <path d="M250.0,154.0 L250.0,468.0 L120.0,468.0 L120.0,782.0" stroke="#1c2536" stroke-width="1.4" fill="none"/>
+  <circle cx="120" cy="782.0" r="3.4" fill="#3b82f6" filter="url(#glow)"/>
+  <text x="140.0" y="788.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">frontend/src/pages/</text>
+  <text x="452.0" y="788.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">Overview · Queue · Jobs · History</text>
+  <rect x="60.0" y="836.0" width="1080.0" height="58.0" rx="10" fill="#0b1420" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="61.0" y="836.0" width="1078.0" height="3" rx="1.5" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="80.0" y="860.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Invariant: nothing in app/ writes to a repository except through store.claim_approval() → one GitHub call.</text>
+  <text x="80.0" y="880.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="11.5" font-weight="400" fill="#4a5a72" fill-opacity="1.0" text-anchor="start">Grep for it: rg 'post_issue_comment' app/ — one call site, behind a CAS, behind a human.</text>
+</svg>

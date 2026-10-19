@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-label="AutoPR architecture">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#070a12"/><stop offset="55%" stop-color="#05070d"/>
+      <stop offset="100%" stop-color="#04060b"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee"/><stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0.35"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.20"/>
+      <stop offset="60%" stop-color="#3b82f6" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#05070d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="halo2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#05070d" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-80%" y="-300%" width="260%" height="700%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 H0 V40" fill="none" stroke="#111a26" stroke-width="1"/>
+    </pattern>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6"
+            markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5a72"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <rect width="1200" height="800" fill="url(#grid)" opacity="0.55"/>
+  <text x="60.0" y="54.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="26" font-weight="700" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Architecture</text>
+  <text x="60.0" y="78.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">Four lanes. Redis is delivery, Postgres is truth.</text>
+  <rect x="48.0" y="104.0" width="1104.0" height="136.0" rx="18" fill="#0a1018" fill-opacity="1.0" stroke="#1a2436" stroke-width="1.2" stroke-dasharray="7 6"/>
+  <text x="70.0" y="130.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#22d3ee" fill-opacity="1.0" text-anchor="start" letter-spacing="2.4">CLIENT</text>
+  <line x1="70" y1="140" x2="121" y2="140" stroke="#22d3ee" stroke-width="2" filter="url(#glow)"/>
+  <rect x="70.0" y="152.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="71.0" y="152.0" width="328.0" height="3" rx="1.5" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="86.0" y="182.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">GitHub</text>
+  <text x="86.0" y="204.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">webhook delivery</text>
+  <text x="86.0" y="221.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">HMAC • retries</text>
+  <rect x="422.0" y="152.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="423.0" y="152.0" width="328.0" height="3" rx="1.5" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="438.0" y="182.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Operator</text>
+  <text x="438.0" y="204.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">dashboard</text>
+  <text x="438.0" y="221.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">bearer token</text>
+  <rect x="774.0" y="152.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="775.0" y="152.0" width="328.0" height="3" rx="1.5" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="790.0" y="182.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">CI runner</text>
+  <text x="790.0" y="204.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">check_run</text>
+  <text x="790.0" y="221.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">workflow_run</text>
+  <path d="M600.0,240.0 L600.0,251.0" stroke="#4a5a72" stroke-width="1.6" fill="none" marker-end="url(#arrowhead)"/>
+  <rect x="48.0" y="262.0" width="1104.0" height="136.0" rx="18" fill="#0a1018" fill-opacity="1.0" stroke="#1a2436" stroke-width="1.2" stroke-dasharray="7 6"/>
+  <text x="70.0" y="288.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#3b82f6" fill-opacity="1.0" text-anchor="start" letter-spacing="2.4">EDGE</text>
+  <line x1="70" y1="298" x2="121" y2="298" stroke="#3b82f6" stroke-width="2" filter="url(#glow)"/>
+  <rect x="70.0" y="310.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="71.0" y="310.0" width="328.0" height="3" rx="1.5" fill="#3b82f6" filter="url(#glow)"/>
+  <text x="86.0" y="340.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">FastAPI ingress</text>
+  <text x="86.0" y="362.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">POST /webhook</text>
+  <text x="86.0" y="379.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">constant-time HMAC</text>
+  <text x="86.0" y="396.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">10 MB cap pre-auth</text>
+  <rect x="422.0" y="310.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="423.0" y="310.0" width="328.0" height="3" rx="1.5" fill="#3b82f6" filter="url(#glow)"/>
+  <text x="438.0" y="340.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Rate limit</text>
+  <text x="438.0" y="362.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">per-IP token bucket</text>
+  <text x="438.0" y="379.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">429 with Retry-After</text>
+  <rect x="774.0" y="310.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="775.0" y="310.0" width="328.0" height="3" rx="1.5" fill="#3b82f6" filter="url(#glow)"/>
+  <text x="790.0" y="340.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Schema guard</text>
+  <text x="790.0" y="362.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">assert_schema_ready()</text>
+  <text x="790.0" y="379.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">Alembic only</text>
+  <path d="M600.0,398.0 L600.0,409.0" stroke="#4a5a72" stroke-width="1.6" fill="none" marker-end="url(#arrowhead)"/>
+  <rect x="48.0" y="420.0" width="1104.0" height="136.0" rx="18" fill="#0a1018" fill-opacity="1.0" stroke="#1a2436" stroke-width="1.2" stroke-dasharray="7 6"/>
+  <text x="70.0" y="446.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#a855f7" fill-opacity="1.0" text-anchor="start" letter-spacing="2.4">CORE</text>
+  <line x1="70" y1="456" x2="121" y2="456" stroke="#a855f7" stroke-width="2" filter="url(#glow)"/>
+  <rect x="70.0" y="468.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="71.0" y="468.0" width="328.0" height="3" rx="1.5" fill="#a855f7" filter="url(#glow)"/>
+  <text x="86.0" y="498.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Job queue</text>
+  <text x="86.0" y="520.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">Redis Streams</text>
+  <text x="86.0" y="537.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">consumer group + PEL</text>
+  <text x="86.0" y="554.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">XAUTOCLAIM 900 s</text>
+  <rect x="422.0" y="468.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="423.0" y="468.0" width="328.0" height="3" rx="1.5" fill="#a855f7" filter="url(#glow)"/>
+  <text x="438.0" y="498.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">LangGraph</text>
+  <text x="438.0" y="520.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">4 LLM agents</text>
+  <text x="438.0" y="537.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">2 deterministic gates</text>
+  <text x="438.0" y="554.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">6 nodes</text>
+  <rect x="774.0" y="468.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="775.0" y="468.0" width="328.0" height="3" rx="1.5" fill="#a855f7" filter="url(#glow)"/>
+  <text x="790.0" y="498.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Human gate</text>
+  <text x="790.0" y="520.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">PENDING decision</text>
+  <text x="790.0" y="537.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">CAS approve → one write</text>
+  <path d="M600.0,556.0 L600.0,567.0" stroke="#4a5a72" stroke-width="1.6" fill="none" marker-end="url(#arrowhead)"/>
+  <rect x="48.0" y="578.0" width="1104.0" height="136.0" rx="18" fill="#0a1018" fill-opacity="1.0" stroke="#1a2436" stroke-width="1.2" stroke-dasharray="7 6"/>
+  <text x="70.0" y="604.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#10b981" fill-opacity="1.0" text-anchor="start" letter-spacing="2.4">STATE</text>
+  <line x1="70" y1="614" x2="121" y2="614" stroke="#10b981" stroke-width="2" filter="url(#glow)"/>
+  <rect x="70.0" y="626.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="71.0" y="626.0" width="328.0" height="3" rx="1.5" fill="#10b981" filter="url(#glow)"/>
+  <text x="86.0" y="656.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Postgres</text>
+  <text x="86.0" y="678.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">PRJob · JobResult</text>
+  <text x="86.0" y="695.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">ReviewDecision</text>
+  <text x="86.0" y="712.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">the source of truth</text>
+  <rect x="422.0" y="626.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="423.0" y="626.0" width="328.0" height="3" rx="1.5" fill="#10b981" filter="url(#glow)"/>
+  <text x="438.0" y="656.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Qdrant</text>
+  <text x="438.0" y="678.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">repo chunks</text>
+  <text x="438.0" y="695.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">ContextVar-filtered</text>
+  <rect x="774.0" y="626.0" width="330.0" height="66.0" rx="12" fill="#0d141f" fill-opacity="1.0" stroke="#1c2536" stroke-width="1.2"/>
+  <rect x="775.0" y="626.0" width="328.0" height="3" rx="1.5" fill="#10b981" filter="url(#glow)"/>
+  <text x="790.0" y="656.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Docker sandbox</text>
+  <text x="790.0" y="678.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">--network none</text>
+  <text x="790.0" y="695.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">non-root • ro rootfs</text>
+  <text x="790.0" y="712.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">512 MB · 1.0 CPU</text>
+  <text x="60.0" y="780.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#4a5a72" fill-opacity="1.0" text-anchor="start">Reads and writes cross the lanes in that order — nothing in CORE can mutate a repository without HUMAN passing through the gate.</text>
+</svg>

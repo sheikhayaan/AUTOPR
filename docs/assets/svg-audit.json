@@ -1,0 +1,38 @@
+{
+  "banner.svg": {
+    "width": 1200,
+    "height": 380,
+    "text_elements": 21,
+    "issues": []
+  },
+  "architecture.svg": {
+    "width": 1200,
+    "height": 800,
+    "text_elements": 48,
+    "issues": []
+  },
+  "pipeline.svg": {
+    "width": 1200,
+    "height": 660,
+    "text_elements": 53,
+    "issues": []
+  },
+  "donut.svg": {
+    "width": 1200,
+    "height": 620,
+    "text_elements": 18,
+    "issues": []
+  },
+  "histogram.svg": {
+    "width": 1200,
+    "height": 680,
+    "text_elements": 43,
+    "issues": []
+  },
+  "repo-tree.svg": {
+    "width": 1200,
+    "height": 900,
+    "text_elements": 35,
+    "issues": []
+  }
+}
