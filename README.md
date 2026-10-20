@@ -989,6 +989,15 @@ why they have a job of their own — there the URL is set and **a skip is a fail
 skipping a concurrency test in a job that has a database is a silent pass. Locally they ran
 against a real PostgreSQL 16 server (binaries via `pgserver`, no Docker), not a mock.
 
+One caveat belongs with those two rows rather than in a commit message. The workflow changes that
+*make* them CI gates — the `sandbox` job and the Postgres-tier step inside `migrations` — are
+committed on this branch but **not yet on `origin/main`**: GitHub refuses to accept a push that
+modifies `.github/workflows/` unless the token carries the `workflow` scope, and the credential
+here has `public_repo` only (`gh auth status` says so; `gh auth refresh -h github.com -s workflow`
+fixes it, and it needs a browser). So on the public `main` those two gates are proven **locally**
+and the workflow files that gate them locally are pending — the exact failure mode the phase-17
+audit removed from this table, now named here instead of being described as already-running.
+
 The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
 `tests/conftest.py`, so a developer's `.env` cannot change what it asserts.
 
