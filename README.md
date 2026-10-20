@@ -1248,6 +1248,18 @@ lease window is the remaining assumption, not the claim itself.
   installation, rejected JWT), and `github-live.yml` runs it weekly the moment App secrets are
   configured. Until that happens, treat App mode as *built and unit-proven, not yet lived-in*.
 
+  What *has* now been exercised by GitHub itself is the delivery leg. A repository webhook was
+  created, a public tunnel pointed at a running instance, and the deliveries were judged from
+  **GitHub's own delivery log**: a correctly-signed `ping` → `200` (0.79 ms), the same `ping`
+  with a deliberately wrong secret → **`401`**, rejected with `webhook.invalid_signature` in our
+  log, and a real `pull_request` delivery (PR #1) → `200` (1.71 ms), ingested as
+  `job_id=1 … sha=e07f22c6` with `XLEN autopr:jobs` = 1. A first attempt got `503` because
+  Redis was down: the endpoint failed closed rather than accept work it could not queue. That
+  proves signature verification and ingestion against real signed traffic — it does **not** prove
+  registration or installation-token minting, because a repository webhook carries no
+  `installation` object. App registration has no REST endpoint; it is browser-only, which is why
+  `scripts/verify_installation.py` exists instead of a claim that it was done.
+
 ---
 
 ## License
