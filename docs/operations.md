@@ -57,6 +57,27 @@ are set (the `:?` interpolation guards). Order of operations on `up`:
 
 Verify: `curl -s localhost:8000/readyz` → `{"status":"ready",…}`.
 
+Two settings that used to make this step fail, worth knowing because the failure
+did not look like a configuration problem:
+
+* **`AUTOPR_DATABASE_URL` must be Postgres in a container.** A container
+  filesystem is ephemeral, so an SQLite job queue loses queued work on every
+  restart with no error at all. `app.config` therefore refuses to boot on SQLite
+  inside a container (it detects `/.dockerenv`/`KUBERNETES_SERVICE_HOST`, or
+  `AUTOPR_IN_CONTAINER`) unless `AUTOPR_ALLOW_INSECURE=1` says the jobs do not
+  matter. Compose and Fly both set a Postgres URL, so a correct deploy never sees
+  this. The image ships a writable `/var/lib/autopr` for the throwaway case, so
+  `docker run -e AUTOPR_ALLOW_INSECURE=1 …` starts instead of reporting
+  `unable to open database file`.
+* **A blank `AUTOPR_GITHUB_APP_ID` means "PAT mode".** Compose interpolates a
+  missing key to `""` and `.env.example` ships the line blank; a blank value is
+  parsed as unset rather than rejected, which is what used to abort the whole
+  stack with a pydantic `int_parsing` error.
+
+A bare `docker run` of the API image is **not** the supported path — run
+`alembic upgrade head` first (the schema guard says so explicitly, rather than
+serving 500s against an empty database).
+
 ---
 
 ## 2. Secrets

@@ -516,19 +516,19 @@ equal tokens × price, and unmeasured inputs must stay labelled.
 ## Codebase composition
 
 <div align="center">
-<img src="./docs/assets/donut.svg" alt="Composition of 21,636 lines across 126 files" width="100%">
+<img src="./docs/assets/donut.svg" alt="Composition of 23,201 lines across 131 files" width="100%">
 </div>
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 7,319 | 36 | 31.8% |
-| Tests (`tests/`) | 8,875 | 45 | 38.6% |
-| Dashboard (`frontend/src`) | 4,205 | 37 | 18.3% |
-| Tooling (`scripts/`, `alembic/`) | 2,603 | 12 | 11.3% |
-| **Total** | **23,002** | **130** | **100%** |
+| Backend (`app/`) | 7,371 | 36 | 31.8% |
+| Tests (`tests/`) | 9,022 | 46 | 38.9% |
+| Dashboard (`frontend/src`) | 4,205 | 37 | 18.1% |
+| Tooling (`scripts/`, `alembic/`) | 2,603 | 12 | 11.2% |
+| **Total** | **23,201** | **131** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
-from the tree. Tests are 35% of the codebase, which is the ratio a service whose failure
+from the tree. Tests are 39% of the codebase, which is the ratio a service whose failure
 mode is "writes to your repository" should have.
 
 ---
@@ -621,6 +621,28 @@ docker compose up --build
 
 Brings up Postgres, Redis, Qdrant, the API (running `alembic upgrade head` first) and the
 worker. See [`docs/operations.md`](docs/operations.md).
+
+Verified by running it, not by describing it: `docker compose up -d --build` reaches
+`api (healthy)`, `worker (running)`, `postgres (healthy)`, `redis (healthy)`, `qdrant (running)`;
+`alembic` creates all five tables in Postgres; a signed `ping` answers
+`{"status":"ignored","event":"ping"}`; a signed `pull_request` answers
+`{"status":"queued","job_id":1}`, `XLEN autopr:jobs` becomes 1, and the worker **claims it and
+calls GitHub** for the file list — `worker.job_failed` with a 404 for the fabricated PR number,
+which is the fake PR rather than the stack. The review itself needs a provider key:
+`AUTOPR_GROQ_API_KEY` is empty in the shipped `.env`, so a keyless stack stops at the first
+GitHub read instead of inventing a verdict.
+
+Two container edges found by doing that, both now fixed and pinned by tests:
+
+* `docker run autopr:local` used to die with `unable to open database file`: the default SQLite
+  path is relative and the runtime stage runs as `appuser` in a root-owned `/app`. The image now
+  ships a writable `/var/lib/autopr`, and — the part that matters — `app.config` **refuses to
+  start on SQLite inside a container** unless `AUTOPR_ALLOW_INSECURE=1`. A container filesystem
+  is ephemeral, so an SQLite job queue is data loss with no error at all, which is worse than a
+  crash (`tests/test_container_sqlite_guard.py`).
+* `AUTOPR_GITHUB_APP_ID=` — blank, exactly as `.env.example` and compose's
+  `${AUTOPR_GITHUB_APP_ID:-}` produce it — crashed settings parsing with `int_parsing`, so the
+  documented compose path **did not start at all**. Blank now means "not configured" (PAT mode).
 
 ### 60-second smoke test
 
@@ -955,7 +977,7 @@ that auto-posts attacker-chosen *text* as a comment — never code, never a push
 
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
-<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>478 passed, 5 skipped</b> (480 when a Docker daemon is running) &mdash; 483 collected</td></tr>
+<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>499 passed, 3 skipped</b> with a Docker daemon (497 passed, 5 skipped without one) &mdash; 502 collected</td></tr>
 <tr><td>Cross-process claiming</td><td><code>pytest tests/test_worker_multiprocess.py</code></td><td><b>7 passed against a real Postgres</b> &mdash; 8 OS processes racing one job run the handler <b>once</b>; a crashed worker hands the row back to another <em>process</em>; a live lease is not stolen (negative control)</td></tr>
 <tr><td>Concurrency safety</td><td><code>python scripts/negative_control_claim.py</code></td><td><b>2 negative controls</b> &mdash; disabling the job claim or the failure release turns 2&ndash;3 tests red, and each control restores <code>app/worker.py</code> byte-identically</td></tr>
 <tr><td>Optimisation benchmark</td><td><code>python scripts/bench_optimisations.py</code></td><td><b>2.8&ndash;3.1&times;</b> worker throughput, <b>37&times;</b> per GitHub call, <b>106&times;</b> quota check &mdash; each measured against the real code, not a stand-in</td></tr>
@@ -980,7 +1002,7 @@ The 5 skips are deliberate and named: **3** need a real GitHub token, and **2** 
 Docker-gated sandbox tests, which skip when no daemon is present. Locally those 2 are the
 honest outcome; in the dedicated `sandbox` CI job the image is built and a skip is a failure,
 because there a skip would mean the boundary silently stopped being tested. With Docker
-running locally the count becomes 480 passed / 3 skipped — both numbers are honest, which one
+running locally the count becomes 499 passed / 3 skipped — both numbers are honest, which one
 you see depends on your host.
 
 The Postgres tier is counted apart and behaves differently on purpose: its 10 tests skip in a

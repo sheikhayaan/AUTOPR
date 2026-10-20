@@ -49,6 +49,18 @@ WORKDIR /app
 # Non-root: the API/worker never need root.
 RUN useradd --create-home --uid 10001 appuser
 
+# A writable data directory, so the image's own default config can start. The
+# runtime stage runs as appuser and /app belongs to root, so a relative SQLite
+# path (the app's default) cannot be created here — `docker run` of this image
+# used to die with an opaque "unable to open database file". The default below
+# is deliberately *inside* the container and therefore ephemeral: a deploy that
+# never sets AUTOPR_DATABASE_URL is a data-loss deploy, so app.config refuses to
+# start on SQLite in a container unless AUTOPR_ALLOW_INSECURE=1 says the jobs do
+# not matter. docker-compose.yml and fly.toml both supply a Postgres URL, which
+# overrides this.
+RUN mkdir -p /var/lib/autopr && chown appuser:appuser /var/lib/autopr
+ENV AUTOPR_DATABASE_URL="sqlite+pysqlite:////var/lib/autopr/autopr.db"
+
 # The resolved virtualenv from the builder (owned by appuser).
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 
@@ -63,7 +75,6 @@ COPY --chown=appuser:appuser scripts ./scripts
 USER appuser
 
 EXPOSE 8000
-
 # Default command is the API; the worker service/process overrides it. Note the
 # CI-fix *sandbox* verification needs a Docker-capable host (docker CLI + socket)
 # and is a local/Compose capability, not available in this lean cloud image — see

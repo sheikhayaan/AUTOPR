@@ -7,15 +7,36 @@ config; it is constructed once at import time.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
+from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The shipped placeholder for the webhook secret. If this exact value survives to
 # runtime, no real secret was configured — the model validator below refuses to
 # start unless AUTOPR_ALLOW_INSECURE=1 (local/dev/tests).
 _PLACEHOLDER_WEBHOOK_SECRET = "changeme-generate-a-real-secret"
+
+
+def running_in_container() -> bool:
+    """Best-effort probe: is this process inside a container?
+
+    Used only to judge whether *ephemeral* storage is acceptable, so a false
+    negative costs a warning-free start and a false positive is caught by the
+    documented ``AUTOPR_ALLOW_INSECURE=1`` escape hatch. ``AUTOPR_IN_CONTAINER``
+    overrides the probe both ways: the tests need it, and a runtime can be
+    ephemeral without shipping ``/.dockerenv`` (a systemd-nspawn unit, say).
+    """
+    override = os.environ.get("AUTOPR_IN_CONTAINER", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return True
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
 class Settings(BaseSettings):
@@ -304,6 +325,22 @@ class Settings(BaseSettings):
         """Parse trusted_proxies into bare IP/CIDR strings for the IP resolver."""
         return tuple(p.strip() for p in self.trusted_proxies.split(",") if p.strip())
 
+    @field_validator("github_app_id", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value: object) -> object:
+        """Read an empty env var as "not configured" rather than as a broken integer.
+
+        ``int | None`` cannot parse ``""``, and ``""`` is what the ecosystem
+        actually produces: ``docker-compose.yml`` interpolates a missing key as
+        ``${AUTOPR_GITHUB_APP_ID:-}`` and ``.env.example`` ships the line blank.
+        Without this, the *documented* `docker compose up` died inside pydantic
+        with ``int_parsing`` before it could say which setting was missing — an
+        error about the parser instead of an error about the configuration.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @model_validator(mode="after")
     def _enforce_secure_config(self) -> Settings:
         """Fail fast on the two settings that turn a misconfig into someone else's write.
@@ -338,6 +375,21 @@ class Settings(BaseSettings):
                 'repository. Generate one with: python -c "import secrets; '
                 'print(secrets.token_hex(32))" and set it, or set '
                 "AUTOPR_ALLOW_INSECURE=1 for local/dev/tests."
+            )
+        # SQLite in a container is not a durability choice, it is a data-loss
+        # default: the queue lives in the container filesystem, so every restart
+        # or reschedule silently discards pending jobs (and on a read-only rootfs
+        # it cannot even be opened — the error is an opaque sqlalchemy
+        # OperationalError, which is what a `docker run` of this image used to
+        # print). Both failure modes are invisible until work goes missing.
+        if self.is_sqlite and running_in_container():
+            raise ValueError(
+                "AUTOPR_DATABASE_URL is SQLite inside a container. A container's "
+                "filesystem is ephemeral, so queued jobs vanish on every restart "
+                "instead of failing visibly. Point it at Postgres — "
+                "docker-compose.yml and fly.toml both expect AUTOPR_DATABASE_URL to "
+                "supply it — or set AUTOPR_ALLOW_INSECURE=1 for a throwaway "
+                "instance whose jobs do not matter."
             )
         return self
 

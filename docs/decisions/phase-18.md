@@ -189,3 +189,41 @@ Gate state at the end of this phase: **478 passed, 5 skipped** (483 collected) �
 of which 10 are the new Postgres tier — **88%** coverage against a 78% gate,
 ruff/format/mypy clean, 17 docs guards, figures regenerated, frontend 63 tests
 with tsc/eslint/prettier clean.
+
+## 6. The image, run instead of read
+
+"Fully built" is a claim about a running system, so the last thing this phase did was build
+and run the artefact. Both images build (`autopr:local` 559 MB, `autopr-sandbox:latest` 470 MB)
+and the Compose stack reaches `api (healthy)`, `worker (running)`, `postgres (healthy)`,
+`redis (healthy)`, `qdrant (running)`; a signed `ping` is answered `ignored`, a signed
+`pull_request` is answered `{"status":"queued","job_id":1}`, `XLEN autopr:jobs` is 1, and the
+worker claims it and calls GitHub (`worker.job_failed`, 404, because the PR number was
+fabricated). The review itself is what a keyless stack cannot do: `AUTOPR_GROQ_API_KEY` is empty
+in the shipped `.env`.
+
+That run found two defects that reading could not have:
+
+1. **`docker run autopr:local` died with `unable to open database file`.** The app's default
+   database URL is a *relative* SQLite path and the runtime stage runs as `appuser` in a
+   root-owned `/app`. The loud half is annoying; the quiet half is worse — make the path
+   writable and the queue becomes ephemeral, so a restart silently discards pending jobs.
+   Fix: the image ships a writable `/var/lib/autopr`, and `app.config` refuses to start on
+   SQLite inside a container unless `AUTOPR_ALLOW_INSECURE=1` states that the jobs do not
+   matter. The probe (`/.dockerenv`, `/run/.containerenv`, `KUBERNETES_SERVICE_HOST`, or an
+   explicit `AUTOPR_IN_CONTAINER`) is pinned by 15 tests, including the negative control: with
+   the guard neutered two of them go red, and the guard is restored byte-identically.
+2. **The documented compose path did not start at all.** `docker compose up` exited 1 with
+   `pydantic ... github_app_id: Input should be a valid integer, unable to parse string as an
+   integer`, because compose interpolates a missing key to `""`
+   (`${AUTOPR_GITHUB_APP_ID:-}`) and `.env.example` ships the line blank. The message named the
+   parser, not the setting. A blank value now means "not configured" (PAT mode), pinned by
+   parametrised tests for `""`, `"   "`, a real id, and an absent variable.
+
+Neither was reachable from the test suite, because the suite runs as one process on a host with
+a writable SQLite path and never parses compose's interpolation. Both were one command away.
+
+Gate state after these changes: **499 passed, 3 skipped** (502 collected) with a Docker daemon
+up — the two sandbox tests now *run* rather than skip — **88%** coverage, ruff/format/mypy
+clean over 120 files, 17 docs guards, figures regenerated (23,201 lines across 131 files),
+frontend 63 tests with tsc/eslint/prettier clean, and the claim negative control still turns the
+cross-process tests red on demand.
