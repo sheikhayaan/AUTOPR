@@ -969,7 +969,8 @@ that auto-posts attacker-chosen *text* as a comment — never code, never a push
 <tr><td>Types (frontend)</td><td><code>tsc -b</code></td><td><b>clean</b></td></tr>
 <tr><td>Lint (frontend)</td><td><code>eslint --max-warnings 0</code></td><td><b>clean</b></td></tr>
 <tr><td>Format (frontend)</td><td><code>prettier --check</code></td><td><b>clean</b></td></tr>
-<tr><td>Migrations</td><td>alembic up → down → up on real Postgres</td><td><b>green in CI</b></td></tr>
+<tr><td>Migrations</td><td>alembic up → down → up on real Postgres</td><td><b>green in CI</b>, plus <b>3 assertions</b> (<code>tests/test_migrations_postgres.py</code>): the downgrade leaves <b>no tables</b>, models and migrations have <b>not drifted</b>, re-running is a no-op</td></tr>
+<tr><td>Installation verifier</td><td><code>python scripts/verify_installation.py</code></td><td><b>16 tests</b> pinning every failure mode; one command runs the real chain (JWT &rarr; installation token &rarr; repo access &rarr; permission &rarr; optional comment) against a real App</td></tr>
 <tr><td>Docs &amp; figures</td><td><code>pytest tests/test_docs_assets.py</code></td><td><b>17 passed</b> — figures match the tree, audit is clean, numbers do not drift</td></tr>
 <tr><td>Sandbox boundary</td><td><code>ci.yml</code> &rarr; <code>sandbox</code> job</td><td>Builds the image, runs the 2 Docker-gated tests and <b>fails on <code>skipped</code></b> &mdash; a laptop may skip them, that job may not</td></tr>
 <tr><td>Live GitHub contract</td><td><code>github-live.yml</code></td><td>3 tests, weekly (<code>schedule</code>) + <code>workflow_dispatch</code>; with no token secret the run <b>warns that the contract is unverified</b> instead of claiming it passed</td></tr>
@@ -979,8 +980,16 @@ The 5 skips are deliberate and named: **3** need a real GitHub token, and **2** 
 Docker-gated sandbox tests, which skip when no daemon is present. Locally those 2 are the
 honest outcome; in the dedicated `sandbox` CI job the image is built and a skip is a failure,
 because there a skip would mean the boundary silently stopped being tested. With Docker
-running locally the count becomes 454 passed / 3 skipped — both numbers are honest, which one
-you see depends on your host. The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
+running locally the count becomes 480 passed / 3 skipped — both numbers are honest, which one
+you see depends on your host.
+
+The Postgres tier is counted apart and behaves differently on purpose: its 10 tests skip in a
+plain `pytest` run with no server, so a stock CI backend job reports 15 skips, not 5. That is
+why they have a job of their own — there the URL is set and **a skip is a failure**, because
+skipping a concurrency test in a job that has a database is a silent pass. Locally they ran
+against a real PostgreSQL 16 server (binaries via `pgserver`, no Docker), not a mock.
+
+The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
 `tests/conftest.py`, so a developer's `.env` cannot change what it asserts.
 
 ```mermaid
