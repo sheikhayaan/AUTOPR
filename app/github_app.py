@@ -27,10 +27,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import httpx
 import jwt as pyjwt
 import structlog
 
 from app.config import settings
+from app.http import build_client
 from app.routing.github import ActionResult, FakeGitHubClient, HttpGitHubClient
 
 log = structlog.get_logger(__name__)
@@ -118,6 +120,7 @@ class AppAuth:
         self.private_key = normalise_private_key(private_key)
         self.api_url = (api_url or settings.github_api_url).rstrip("/")
         self._transport = transport  # injectable for tests; None = real network
+        self._client: httpx.Client | None = None
         self._lock = threading.Lock()
         self._tokens: dict[int, InstallationToken] = {}
         self._repo_cache: dict[str, tuple[int | None, float]] = {}
@@ -140,10 +143,21 @@ class AppAuth:
 
     # --- installation tokens ---------------------------------------------
 
-    def _http(self):
-        import httpx
+    def _http(self) -> httpx.Client:
+        """The pooled client for App-level calls (token mints, install lookups).
 
-        return httpx.Client(transport=self._transport, timeout=15.0)
+        Cached per instance. A token mint happens per installation per hour, and
+        a new client each time paid a TLS handshake for a request that is already
+        the most latency-visible call in the tenancy path.
+        """
+        if self._client is None:
+            self._client = build_client(self._transport)
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
     def fetch_installation_token(self, installation_id: int) -> InstallationToken:
         """Mint a fresh token. Raises `GitHubAppError` if GitHub refuses."""
@@ -156,8 +170,8 @@ class AppAuth:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
-            with self._http() as client:
-                resp = client.post(url, headers=headers)
+            client = self._http()
+            resp = client.post(url, headers=headers)
         except httpx.HTTPError as exc:
             raise GitHubAppError(f"token mint transport error: {exc!r}") from exc
         if resp.status_code >= 300:
@@ -224,8 +238,8 @@ class AppAuth:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
-            with self._http() as client:
-                resp = client.get(url, headers=headers)
+            client = self._http()
+            resp = client.get(url, headers=headers)
         except httpx.HTTPError as exc:
             raise GitHubAppError(f"permission lookup failed: {exc!r}") from exc
         if resp.status_code == 404:
@@ -264,8 +278,8 @@ class AppAuth:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
-            with self._http() as client:
-                resp = client.get(url, headers=headers)
+            client = self._http()
+            resp = client.get(url, headers=headers)
         except httpx.HTTPError as exc:
             raise GitHubAppError(f"repo installation lookup failed: {exc!r}") from exc
         if resp.status_code == 404:
@@ -288,8 +302,8 @@ class AppAuth:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
-            with self._http() as client:
-                resp = client.get(url, headers=headers)
+            client = self._http()
+            resp = client.get(url, headers=headers)
         except httpx.HTTPError as exc:
             raise GitHubAppError(f"installation lookup failed: {exc!r}") from exc
         if resp.status_code >= 300:

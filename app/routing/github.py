@@ -20,9 +20,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+import httpx
 import structlog
 
 from app.config import settings
+from app.http import build_client
 
 log = structlog.get_logger()
 
@@ -91,6 +93,27 @@ class HttpGitHubClient:
         # status handling) without opening a socket — and without a test ever
         # being able to reach a live repository by accident.
         self._transport = transport
+        # Wait until first use, not construction: a client built for a job that
+        # never calls GitHub should not open a pool.
+        self._client: httpx.Client | None = None
+
+    def _http(self) -> httpx.Client:
+        """The pooled client for this instance.
+
+        A transport-bound client is per-instance (a MockTransport carries its
+        test's state); otherwise the process-wide pool is reused, so a job's four
+        to seven calls share one TLS connection instead of paying a handshake
+        each. The token is per-request, never on the client, so reuse across
+        tenants cannot cross credentials.
+        """
+        if self._client is None:
+            self._client = build_client(self._transport)
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
     def _headers(self) -> dict:
         return {
@@ -104,8 +127,7 @@ class HttpGitHubClient:
 
         url = f"{self.api_url}{path}"
         try:
-            with httpx.Client(transport=self._transport, timeout=15.0) as client:
-                resp = client.post(url, headers=self._headers(), json=json_body)
+            resp = self._http().post(url, headers=self._headers(), json=json_body)
         except httpx.HTTPError as exc:
             log.error("github.http_error", kind=kind, error=repr(exc))
             return ActionResult(ok=False, kind=kind, detail=repr(exc))
@@ -209,9 +231,31 @@ class HttpGitHubReader:
     the job rather than silently reviewing an empty changeset.
     """
 
-    def __init__(self, token: str = "", api_url: str | None = None) -> None:
+    def __init__(
+        self,
+        token: str = "",
+        api_url: str | None = None,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         self.token = token
         self.api_url = (api_url or settings.github_api_url).rstrip("/")
+        self._transport = transport  # injectable for tests; None = real network
+        self._client: httpx.Client | None = None
+
+    def _http(self) -> httpx.Client:
+        """The pooled client. Same reasoning as the write client: a job makes
+        several reads (pages of a diff, a tarball) and each handshake used to be
+        paid again. The token stays per-request, so a shared pool cannot carry
+        one tenant's credential into another's call."""
+        if self._client is None:
+            self._client = build_client(self._transport)
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
     def _headers(self) -> dict:
         headers = {
@@ -223,13 +267,11 @@ class HttpGitHubReader:
         return headers
 
     def list_pull_files(self, repo: str, pr_number: int) -> list[dict]:
-        import httpx
-
         out: list[dict] = []
         page = 1
         while True:
             url = f"{self.api_url}/repos/{repo}/pulls/{pr_number}/files"
-            resp = httpx.get(
+            resp = self._http().get(
                 url,
                 headers=self._headers(),
                 params={"per_page": 100, "page": page},
@@ -260,14 +302,16 @@ class HttpGitHubReader:
         make the sandbox verify a patch against the wrong tree, so we let the
         worker's retry/PEL machinery redeliver instead of proceeding on bad data.
         """
-        import httpx
-
         url = f"{self.api_url}/repos/{repo}/tarball/{ref}"
         # Stream the download so an outsized tarball is rejected *while arriving*
         # rather than after it is fully buffered in worker memory.
         buf = bytearray()
-        with httpx.stream(
-            "GET", url, headers=self._headers(), timeout=60.0, follow_redirects=True
+        with self._http().stream(
+            "GET",
+            url,
+            headers=self._headers(),
+            timeout=60.0,
+            follow_redirects=True,  # /tarball 302s to a signed codeload URL
         ) as resp:
             resp.raise_for_status()
             for chunk in resp.iter_bytes():

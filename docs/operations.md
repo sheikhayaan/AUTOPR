@@ -111,10 +111,83 @@ reprocessing idempotent. Adding workers increases throughput and crash
 resilience (a dead worker's in-flight jobs are reclaimed via `XAUTOCLAIM`) with
 no coordination code.
 
+### 4.1 Concurrency inside one worker
+
+One worker process handles `AUTOPR_WORKER_CONCURRENCY` jobs at once (default `4`),
+so a single slow job no longer stalls the queue behind it. Measured with
+`python scripts/bench_optimisations.py`: 8 jobs × 100 ms of provider latency took
+**1.02 s serially and 0.36 s at concurrency 4 (2.8–3.1× across three runs)**.
+
+This is safe because `process_job` **claims** a job with a conditional `UPDATE`
+before running it — the winner runs the handler, everyone else ACKs. Without that
+claim, parallel handling would double-post, not double throughput. The guard is
+verified by removing it: `python scripts/negative_control_claim.py` disables the
+claim and the release, and asserts the tests that pin them go red.
+
+Sizing: the ceiling is memory and the provider's per-key rate limit, not CPU. Each
+in-flight job can hold a repo snapshot (`AUTOPR_SNAPSHOT_MAX_TOTAL_BYTES`, 25 MB),
+so peak memory ≈ `worker_concurrency × 25 MB` per worker process. Exceeding the
+provider's concurrency limit just collects 429s, which is slower than queueing.
+
+| Knob | Default | Why that default |
+|---|---:|---|
+| `AUTOPR_WORKER_CONCURRENCY` | `4` | Measured 2.8–3.1× over serial at 4; bounded by provider rate limits |
+| `AUTOPR_HTTP_MAX_CONNECTIONS` | `20` | Pool toward the GitHub API, shared per process |
+| `AUTOPR_HTTP_MAX_KEEPALIVE` | `10` | Idle connections kept for reuse |
+| `AUTOPR_HTTP_KEEPALIVE_EXPIRY_S` | `30` | Longer than one job, shorter than GitHub's idle timeout |
+
+One HTTP client serves the whole process. `httpx.Client()` construction costs
+~273 ms (SSL context + pool), and the old code built one per call — four to seven
+times per job. Reuse measured **291 ms → 7.8 ms per call** on loopback. The
+token is per-request, never on the client, so a shared pool cannot carry one
+tenant's credential into another's call (`tests/test_http_client.py`).
+
+> If quota checks ever feel slow: the phase-17 migration adds indexes for the three
+> quota `COUNT`s and the reconcile scan. Measured over 200k rows, `117 ms` →
+> `1.1 ms`, because an unindexed `COUNT` costs a scan that grows with *history*.
+> Confirm the migration is applied before blaming the query.
+
 > Note: the **API** stays a single process by design (1–50 req scale). A
 > multi-process API (gunicorn) would need `prometheus_client` multiprocess mode
 > to aggregate `/metrics` across workers — see
 > [`decisions/phase-9.md`](decisions/phase-9.md).
+
+### 4.2 Sizing the fleet: `scripts/capacity_plan.py`
+
+The rules of thumb above say *what* bounds a worker. This says *how many* workers
+a workload needs, using Little's law (`workers ≥ λ·S / utilisation`) where `S`
+comes from measured ingest plus provider latency:
+
+```bash
+python scripts/capacity_plan.py                              # 1 → 1,000 tenants
+python scripts/capacity_plan.py --llm-latency-ms 1800 \
+    --price-in-per-mtok 3 --price-out-per-mtok 15            # your numbers
+```
+
+| tenants | jobs/day | peak jobs/h | workers | tokens/day (in/out) | USD/day | storage GB/mo |
+|---:|---:|---:|---:|---|---:|---:|
+| 1 | 4 | 0.9 | 1 | 0.0M / 0.00M | 0.00 | 0.00 |
+| 10 | 43 | 8.6 | 1 | 0.1M / 0.05M | 0.04 | 0.01 |
+| 100 | 429 | 85.7 | 1 | 1.0M / 0.47M | 0.44 | 0.07 |
+| 1,000 | 4,286 | 857.1 | 3 | 10.2M / 4.71M | 4.36 | 0.66 |
+
+Read it with its own caveats, which it prints with every table:
+
+- Two inputs are **assumptions**, not measurements — `llm_latency_ms` and token
+  price. They are labelled in the output, and the plan warns until you calibrate
+  latency by passing `--llm-latency-ms`. Every worker count scales linearly with it.
+- Everything else is measured or derived: ingest p50/p95 come from
+  `docs/assets/bench_result.json`, prompt sizes from `tiktoken` counts of the real
+  system prompts at their real caps, call counts from the graph's edges.
+- It names the **binding constraint** *and how full it is*. At 1,000 tenants the top
+  tier is 1.59% of its published ceiling — the fleet is set by queueing, not by a
+  limit, and the plan says so instead of implying you are about to saturate.
+- Storage is **steady state**, not cumulative: retention caps the table at one
+  window of inflow (`steady_state_storage_mb`), which is the number that decides a
+  disk. CI-failure rows carry up to 12 KB of logs each, so they dominate it.
+- `python -m pytest tests/test_capacity.py` keeps the model honest: the ingest
+  numbers must track the artifact, cost must equal tokens × price, and every
+  unmeasured input must still be labelled.
 
 ---
 

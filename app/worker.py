@@ -17,6 +17,17 @@ Guarantees implemented here:
   message (original + reclaim overlap), the DONE short-circuit and the unique
   job_results key make the second one a no-op.
 
+* **A claim before the work.** ``process_job`` transitions the row with a
+  conditional UPDATE (``WHERE status IN (QUEUED, PENDING)``, or PROCESSING past
+  the reclaim window) and only runs the handler if it won the row. This is what
+  makes concurrent processing — several threads here, several processes there —
+  safe: without it, two deliveries both read "not DONE" and both post. Losing
+  the claim ACKs the message, because whoever won owns the side effect.
+
+* **Bounded in-process concurrency.** ``worker_concurrency`` jobs are handled at
+  once, so one slow job cannot stall the queue and throughput scales with the
+  machine rather than with 1/service_time.
+
 * **Bounded retries + escalation.** ``attempts`` counts executions. A job that has
   already run ``max_attempts`` times is flipped to DEAD (the human queue) on its
   next delivery, without running again. The message is ACK'd so it stops being
@@ -35,9 +46,11 @@ import signal
 import socket
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.agents.rag import grounding_scope
@@ -262,12 +275,94 @@ def process_job(
         log.error("worker.escalated_to_human", job_id=job_id, attempts=job.attempts)
         return True  # ack — it's escalated, not retried
 
-    job.attempts += 1
-    job.status = JobStatus.PROCESSING
+    # --- claim the job before doing any work -------------------------------
+    # Everything above is advisory: the row could change between the SELECT and
+    # here, because another thread or process may be holding the same message
+    # (a duplicate delivery, or a reclaim of an entry we appear to have
+    # abandoned). Only a conditional UPDATE settles who runs the handler. The
+    # allowed source states are:
+    #   QUEUED / PENDING — never started, ours to take.
+    #   PROCESSING past the reclaim window — a worker died mid-job; taking it is
+    #     the whole point of the reclaim path, and `reclaim_idle_ms` is already
+    #     sized to far exceed one job's worst case, so a healthy job is never
+    #     stolen.
+    # Anything else means someone else owns it, and we ACK without working.
+    now = datetime.now(UTC)
+    claim_stamp = now  # the lease we own; the release below matches on it
+    lease_cutoff = now - timedelta(milliseconds=settings.reclaim_idle_ms)
+    claimed = session.execute(
+        update(PRJob)
+        .where(
+            PRJob.id == job_id,
+            (PRJob.status.in_([JobStatus.QUEUED, JobStatus.PENDING]))
+            | ((PRJob.status == JobStatus.PROCESSING) & (PRJob.updated_at < lease_cutoff)),
+        )
+        .values(
+            status=JobStatus.PROCESSING,
+            attempts=PRJob.attempts + 1,
+            updated_at=now,
+        )
+        # The claim is decided by the database, not by the session. SQLAlchemy's
+        # default ('auto') evaluates the WHERE clause *in Python* against objects
+        # already in the identity map, and that comparison blows up on any
+        # backend that hands back naive datetimes (SQLite does, even for a
+        # timezone=True column) — "can't compare offset-naive and offset-aware"
+        # from inside a worker thread, where it is swallowed as a thread
+        # exception rather than surfacing as a failed job. We reload the row below
+        # anyway, so there is nothing to synchronise.
+        .execution_options(synchronize_session=False)
+    ).rowcount  # type: ignore[attr-defined]  # exec_driver_sql returns CursorResult
+    if not claimed:
+        # Someone else won the row (or it moved to DONE/DEAD while we looked).
+        # ACK: the winner owns the side effect, and re-running here would
+        # duplicate it. This is the branch that makes `worker_concurrency > 1`
+        # safe, and it also closes the pre-existing cross-process race.
+        session.rollback()
+        log.info("worker.claim_lost", job_id=job_id)
+        return True
     session.commit()
+    job = session.get(PRJob, job_id)
+    if job is None:  # deleted between claim and reload — nothing to run
+        log.warning("worker.job_missing_after_claim", job_id=job_id)
+        return True
 
     # --- do the work ---
-    summary = handler(session, job)
+    try:
+        summary = handler(session, job)
+    except Exception as exc:
+        # Release the claim before propagating. A row left in PROCESSING is
+        # invisible to every path that could retry it: `reconcile_pending` only
+        # sweeps PENDING, and a redelivery *inside* the lease window loses the
+        # claim and is ACK'd — so the job would sit PROCESSING forever with its
+        # message acked. The claim is only safe because the failure path hands
+        # the row back. Two tests pin it from different sides:
+        # `test_failed_handler_releases_the_claim` here, and
+        # `tests/test_worker_crash.py::test_retries_capped_then_escalated`, which
+        # is what caught its absence.
+        #
+        # The release is another conditional UPDATE, not an attribute write:
+        # `job` in this session is *stale* by construction (the claim set status
+        # and attempts in SQL with synchronize_session=False), so `job.status ==
+        # PROCESSING` is false and an attribute-based release silently does
+        # nothing — exactly how the first version of this block failed. The
+        # `updated_at == claim_stamp` guard makes the release lose to any worker
+        # that has since re-claimed the row.
+        session.rollback()
+        try:
+            session.execute(
+                update(PRJob)
+                .where(
+                    PRJob.id == job_id,
+                    PRJob.status == JobStatus.PROCESSING,
+                    PRJob.updated_at == claim_stamp,
+                )
+                .values(status=JobStatus.QUEUED, last_error=repr(exc))
+                .execution_options(synchronize_session=False)
+            )
+            session.commit()
+        except Exception:  # noqa: BLE001 - best effort; the lease reclaim is the backstop
+            session.rollback()
+        raise
 
     # --- record the side effect exactly once ---
     stmt = insert_ignore_duplicates(
@@ -343,24 +438,71 @@ def _handle_message(queue: JobQueue, msg: StreamMessage, handler) -> None:
 
 
 class Worker:
-    def __init__(self, queue: JobQueue, name: str | None = None, handler=default_handler):
+    def __init__(
+        self,
+        queue: JobQueue,
+        name: str | None = None,
+        handler=default_handler,
+        concurrency: int | None = None,
+    ):
         self.queue = queue
         self.name = name or f"{socket.gethostname()}-{os.getpid()}"
         self.handler = handler
+        # One thread per in-flight job. This is a *process*-local pool: several
+        # worker processes are still the way to scale out, and the claim in
+        # process_job is what makes both directions safe.
+        requested = concurrency if concurrency is not None else settings.worker_concurrency
+        self.concurrency = max(1, requested)
+        self._pool: ThreadPoolExecutor | None = None
         self._stop = False
+
+    def _executor(self) -> ThreadPoolExecutor:
+        """Created lazily so a unit test that never blocks has no threads."""
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(
+                max_workers=self.concurrency, thread_name_prefix=f"autopr-{self.name}"
+            )
+        return self._pool
 
     def stop(self, *_a) -> None:
         self._stop = True
 
     def run_once(self, block_ms: int = 2_000) -> int:
-        """One poll cycle: reclaim stale, then consume new. Returns #handled."""
+        """One poll cycle: reclaim stale, then consume new. Returns #handled.
+
+        With `concurrency == 1` this is exactly the old serial loop. Above it,
+        messages are dispatched to a bounded pool and the cycle waits for the
+        batch. Waiting is deliberate: a cycle never holds more than
+        `concurrency` jobs, so memory per worker stays bounded by
+        `worker_concurrency * snapshot_max_total_bytes`.
+        """
         handled = 0
+        messages: list = []
         for msg in self.queue.reclaim(self.name):
-            _handle_message(self.queue, msg, self.handler)
-            handled += 1
+            messages.append(msg)
         for msg in self.queue.consume(self.name, count=10, block_ms=block_ms):
-            _handle_message(self.queue, msg, self.handler)
-            handled += 1
+            messages.append(msg)
+        if not messages:
+            return 0
+
+        if self.concurrency == 1 or len(messages) == 1:
+            for msg in messages:
+                _handle_message(self.queue, msg, self.handler)
+                handled += 1
+            return handled
+
+        futures = [
+            self._executor().submit(_handle_message, self.queue, msg, self.handler)
+            for msg in messages
+        ]
+        for fut in futures:
+            # _handle_message already catches per-job exceptions; a raise here is
+            # a bug in the harness, and it must not kill the loop.
+            try:
+                fut.result()
+                handled += 1
+            except Exception as exc:  # noqa: BLE001
+                log.error("worker.dispatch_failed", error=repr(exc))
         return handled
 
     def run_forever(self) -> None:
@@ -369,7 +511,12 @@ class Worker:
         self.queue.ensure_group()
         with SessionLocal() as session:
             reconcile_pending(session, self.queue)
-        log.info("worker.started", consumer=self.name)
+        log.info(
+            "worker.started",
+            consumer=self.name,
+            concurrency=self.concurrency,
+            peek=min(self.concurrency, 10),
+        )
         if settings.reclaim_idle_ms < 300_000:
             log.warning(
                 "worker.reclaim_window_may_be_short",
@@ -396,6 +543,11 @@ class Worker:
             if now - last_heartbeat > 30:
                 log.debug("worker.heartbeat", pending=self.queue.pending_count())
                 last_heartbeat = now
+        if self._pool is not None:
+            # Drain in-flight jobs before the process exits: an interrupted
+            # handler leaves its message unacked, which costs a reclaim later.
+            self._pool.shutdown(wait=True)
+            self._pool = None
         log.info("worker.stopped", consumer=self.name)
 
 

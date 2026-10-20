@@ -461,21 +461,63 @@ python scripts/bench_api.py                 # writes docs/assets/bench_result.js
 python scripts/bench_api.py --scale 3       # 3x samples for a tighter p99
 ```
 
+### Worker throughput and the cost of the old HTTP client
+
+Measured by `python scripts/bench_optimisations.py` against the real `Worker`,
+`JobQueue`, `process_job`, `quota_reason` and client builder.
+
+| Change | Before | After | Why it mattered |
+|---|---:|---:|---|
+| Worker handles jobs concurrently | 1.02 s for 8×100 ms | **0.36 s (2.8–3.1×)** | Throughput was `1/service_time`; one slow job stalled the queue |
+| One pooled HTTP client per process | 291 ms/call | **7.8 ms/call** | `httpx.Client()` construction alone is 273 ms (SSL context + pool) and the old code built one per call — 4–7 per job, ≈1.4 s of pure overhead |
+| Indexes for the quota `COUNT`s (200k rows) | 117 ms (`SCAN`) | **1.1 ms (covering index)** | An unindexed `COUNT` costs a scan that grows with *history*, not load |
+
+Concurrency is only safe because `process_job` **claims** a job with a conditional
+`UPDATE` first; without it, parallel handling double-posts. That is verified by removing
+the guard: `python scripts/negative_control_claim.py` disables the claim and the failure
+release and asserts the tests that pin them fail. Full reasoning, including the two
+defects this work exposed (a leaked claim on handler failure, and a naive-datetime crash
+inside the ORM-evaluated `UPDATE`), is in
+[`docs/decisions/phase-17.md`](docs/decisions/phase-17.md).
+
+The last two rows are loopback and SQLite: they measure client construction, protocol
+overhead and query plan shape. They are **not** WAN latency or Postgres timings.
+
+### Capacity, with its assumptions showing
+
+`scripts/capacity_plan.py` turns those measurements into a fleet size (Little's law:
+`workers ≥ λ·S / utilisation`). Two of its inputs cannot be measured here — provider
+latency and token price — so it prints both as **ASSUMPTION** and warns until you pass
+`--llm-latency-ms` from ten timed reviews.
+
+| tenants | jobs/day | peak jobs/h | workers | USD/day | storage GB/mo |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 43 | 8.6 | 1 | 0.04 | 0.01 |
+| 100 | 429 | 85.7 | 1 | 0.44 | 0.07 |
+| 1,000 | 4,286 | 857.1 | 3 | 4.36 | 0.66 |
+
+It also names the **binding constraint** and how full it is: at 1,000 tenants the top
+tier sits at **1.59%** of its published ceiling, so the honest reading is "set by
+queueing, not by a limit" — and the tool says that instead of implying saturation.
+Storage is steady state (retention-capped), not cumulative. `tests/test_capacity.py`
+keeps the inputs honest: the ingest figures must track `bench_result.json`, cost must
+equal tokens × price, and unmeasured inputs must stay labelled.
+
 ---
 
 ## Codebase composition
 
 <div align="center">
-<img src="./docs/assets/donut.svg" alt="Composition of 19,321 lines across 117 files" width="100%">
+<img src="./docs/assets/donut.svg" alt="Composition of 21,636 lines across 126 files" width="100%">
 </div>
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 6,635 | 34 | 34.3% |
-| Tests (`tests/`) | 7,053 | 39 | 36.5% |
-| Dashboard (`frontend/src`) | 4,205 | 37 | 21.8% |
-| Tooling (`scripts/`, `alembic/`) | 1,428 | 7 | 7.4% |
-| **Total** | **19,321** | **117** | **100%** |
+| Backend (`app/`) | 7,319 | 36 | 33.8% |
+| Tests (`tests/`) | 7,977 | 42 | 36.9% |
+| Dashboard (`frontend/src`) | 4,205 | 37 | 19.4% |
+| Tooling (`scripts/`, `alembic/`) | 2,135 | 11 | 9.9% |
+| **Total** | **21,636** | **126** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
 from the tree. Tests are 35% of the codebase, which is the ratio a service whose failure
@@ -905,18 +947,21 @@ that auto-posts attacker-chosen *text* as a comment — never code, never a push
 
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
-<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>401 passed, 5 skipped</b> (403 when a Docker daemon is running) &mdash; 406 collected</td></tr>
+<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>452 passed, 5 skipped</b> (454 when a Docker daemon is running) &mdash; 457 collected</td></tr>
+<tr><td>Concurrency safety</td><td><code>python scripts/negative_control_claim.py</code></td><td><b>2 negative controls</b> &mdash; disabling the job claim or the failure release turns 2&ndash;3 tests red, and each control restores <code>app/worker.py</code> byte-identically</td></tr>
+<tr><td>Optimisation benchmark</td><td><code>python scripts/bench_optimisations.py</code></td><td><b>2.8&ndash;3.1&times;</b> worker throughput, <b>37&times;</b> per GitHub call, <b>106&times;</b> quota check &mdash; each measured against the real code, not a stand-in</td></tr>
+<tr><td>Capacity model</td><td><code>python scripts/capacity_plan.py</code> + <code>pytest tests/test_capacity.py</code></td><td><b>21 tests</b> &mdash; measured inputs track the bench artifact, cost equals tokens &times; price, and every unmeasured input is labelled ASSUMPTION in the output</td></tr>
 <tr><td>Security guards</td><td><code>uv run pytest tests/test_secure_boot.py tests/test_public_mode.py tests/test_client_ip.py</code></td><td><b>42 passed</b> across the three hardenings &mdash; token, allowlist, public mode, quotas, client IP &mdash; each with a negative control that proves the test fails when the guard is removed</td></tr>
-<tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>86%</b> (gate 78%)</td></tr>
-<tr><td>Lint</td><td><code>ruff check app tests scripts docs/assets/generate.py</code></td><td><b>68 files, clean</b></td></tr>
+<tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>88%</b> (gate 78%)</td></tr>
+<tr><td>Lint</td><td><code>ruff check app tests scripts docs/assets/generate.py</code></td><td><b>86 files, clean</b></td></tr>
 <tr><td>Format</td><td><code>ruff format --check</code></td><td><b>clean</b></td></tr>
-<tr><td>Types (backend)</td><td><code>mypy app</code></td><td><b>30 files, no issues</b></td></tr>
+<tr><td>Types (backend)</td><td><code>mypy app</code></td><td><b>36 files, no issues</b></td></tr>
 <tr><td>Frontend tests</td><td><code>npm test</code></td><td><b>63 passed</b> / 9 files</td></tr>
 <tr><td>Types (frontend)</td><td><code>tsc -b</code></td><td><b>clean</b></td></tr>
 <tr><td>Lint (frontend)</td><td><code>eslint --max-warnings 0</code></td><td><b>clean</b></td></tr>
 <tr><td>Format (frontend)</td><td><code>prettier --check</code></td><td><b>clean</b></td></tr>
 <tr><td>Migrations</td><td>alembic up → down → up on real Postgres</td><td><b>green in CI</b></td></tr>
-<tr><td>Docs &amp; figures</td><td><code>pytest tests/test_docs_assets.py</code></td><td><b>16 passed</b> — figures match the tree, audit is clean, numbers do not drift</td></tr>
+<tr><td>Docs &amp; figures</td><td><code>pytest tests/test_docs_assets.py</code></td><td><b>17 passed</b> — figures match the tree, audit is clean, numbers do not drift</td></tr>
 <tr><td>Sandbox boundary</td><td>Docker-gated tests, job <b>fails if they skip</b></td><td><b>2 passed in CI</b></td></tr>
 <tr><td>Live GitHub contract</td><td><code>tests/test_github_live.py</code></td><td>3 tests, weekly + on demand</td></tr>
 </table>
@@ -924,7 +969,7 @@ that auto-posts attacker-chosen *text* as a comment — never code, never a push
 The 5 skips are deliberate and named: **3** need a real GitHub token, and **2** are the
 Docker-gated sandbox tests, which skip when no daemon is present (they run in the dedicated CI
 job, which greps its own output and fails on `skipped`). With Docker running locally the count
-becomes 293 passed / 3 skipped — both numbers are honest, which one you see depends on your host. The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
+becomes 454 passed / 3 skipped — both numbers are honest, which one you see depends on your host. The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
 `tests/conftest.py`, so a developer's `.env` cannot change what it asserts.
 
 ```mermaid
@@ -1129,18 +1174,38 @@ Latest run: **6 figures, 218 text elements, 0 issues.**
 
 ## Limitations (read this before deploying)
 
-- **Single operator, no login.** One bearer token, no accounts, no attribution. Put the
-  dashboard behind your own SSO proxy if you need that.
+- **Public *demo* mode is not multi-tenancy.** `AUTOPR_PUBLIC_MODE` has one identity for
+everyone: read. There are no accounts and no isolation between visitors — it is your data,
+published read-only, which is why it refuses to boot without an allowlist. **GitHub App mode
+tier 3** is different: identity is the installation, authority is the collaborator permission
+GitHub already grants, and the spend ceiling is per tenant. Don't confuse the two.
+- **In App mode, tenant isolation is a `WHERE` clause.** Every tenancy guarantee is a
+filter on `installation_id` in a query. There is no row-level security and no per-tenant
+database. One missed predicate is a leak of another customer's queue and decisions — this is
+the highest-severity bug class in the codebase, and it is a review problem, not a
+testing-completeness problem.
+- **The App private key is now the crown jewel.** It mints an installation token for every
+tenant, so a leak is every customer at once, until the key is rotated. `docs/install.md`
+tells you to keep it in the secret store; nothing in the code can verify that you did.
+- **The job lease can expire under a genuinely slow job.** `process_job` claims a job with a
+conditional `UPDATE`, which prevents two workers from running one job *at the same time*.
+If a job runs longer than `AUTOPR_RECLAIM_IDLE_MS` (15 min), a reclaim can run it again:
+double LLM spend, never double side effects (the `job_results` ledger is the backstop).
+Cross-process claiming is reasoned about but only the in-process case is tested.
 - **Measured in-process.** The latency table is `TestClient` + `fakeredis` + SQLite. It is
-  reproducible anywhere and pessimistic about nothing; a deployed run adds real network.
+  reproducible anywhere and pessimistic about nothing; a deployed run adds real network. The
+  worker numbers in `scripts/bench_optimisations.py` use a `sleep` for provider latency, so
+  they measure scheduling, not a model.
+- **The throughput numbers are not a capacity plan.** Concurrency is measured to help
+  (2.8–3.1× at 4, capped by SQLite write serialisation); the default of 4 is a memory/rate-limit judgement, not a measured optimum,
+  and nothing here has been run against two worker processes, real Postgres, or a real
+  provider under load.
 - **LLM agents are mocked in tests.** The suite proves the *plumbing* deterministically; the
   quality of a review is not covered by a test, and cannot be.
-- **Public mode is a demo, not multi-tenancy.** It has one identity for everyone: read. There are no
-  accounts, no per-visitor quotas, and no isolation between what visitor A and visitor B can see —
-  it is your data, published read-only. The spend ceiling is per *repo* and per *instance* (the only
-  identities that exist), which is exactly why `public_mode` refuses to boot without an allowlist.
-- **No worker lease.** Two workers plus a genuinely >15-minute job can double LLM spend
-  (never double side effects).
+- **Prompt injection is unsolved, and now has a per-tenant blast radius.** A malicious diff
+  can still make the bot post attacker-chosen *text* as a comment — never code, never a push.
+  In App mode the injection arrives on a stranger's PR, so the blast radius is that tenant's
+  repo rather than a single operator's.
 - **SQLite is the default locally**, which serialises writes; the concurrency test proves the
   logic, not Postgres lock behaviour.
 - **RAG is optional and off by default** (`AUTOPR_RAG_ENABLED=false`); with it off the agents
@@ -1148,6 +1213,9 @@ Latest run: **6 figures, 218 text elements, 0 issues.**
 - **The sandbox is a defence-in-depth boundary, not a security product.** Non-root,
   `--network none`, read-only rootfs and resource caps, but it has not been adversarially
   reviewed to run untrusted third-party code at multi-tenant scale.
+- **No real installation has been run by the author.** App registration, token minting and a
+  webhook delivered by GitHub's own servers are verified by construction and by a local
+  socket test, not by pointing a real App at a real repository.
 
 ---
 

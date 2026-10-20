@@ -21,6 +21,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -61,6 +62,14 @@ class PRJob(Base):
     __table_args__ = (
         # The idempotency guarantee lives here.
         UniqueConstraint("dedup_key", name="uq_pr_jobs_dedup_key"),
+        # Quota checks COUNT pr_jobs by time window and reconcile scans by
+        # status. Without these, every webhook ran a sequential scan whose cost
+        # grew with total history. Each one serves a specific query — see the
+        # phase-17 migration, which names all five.
+        Index("ix_pr_jobs_created_at", "created_at"),
+        Index("ix_pr_jobs_repo_created_at", "repo", "created_at"),
+        Index("ix_pr_jobs_installation_created_at", "installation_id", "created_at"),
+        Index("ix_pr_jobs_status", "status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -149,7 +158,11 @@ class ReviewDecision(Base):
     """
 
     __tablename__ = "review_decisions"
-    __table_args__ = (UniqueConstraint("dedup_key", name="uq_review_decisions_dedup_key"),)
+    __table_args__ = (
+        UniqueConstraint("dedup_key", name="uq_review_decisions_dedup_key"),
+        # The pending/threshold reads filter by status and order by time.
+        Index("ix_review_decisions_status_created_at", "status", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dedup_key: Mapped[str] = mapped_column(String(512), nullable=False)

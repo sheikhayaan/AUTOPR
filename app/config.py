@@ -133,6 +133,28 @@ class Settings(BaseSettings):
     # the DB commit and the XADD (a publish failure with a GitHub retry landing on
     # the dedup key otherwise never enqueues them).
     reconcile_interval_s: float = 60.0
+    # How many jobs one worker process handles concurrently.
+    #
+    # The worker used to handle one message at a time: a single slow job (a
+    # provider stall, a 60s sandbox run) held up every other delivery for the
+    # whole queue, so throughput was 1/service_time no matter how much the
+    # machine had spare. Concurrency turns that into N/service_time, and it is
+    # safe only because `process_job` now *claims* a job with a conditional
+    # UPDATE before running it — without that claim, two deliveries of the same
+    # job could both read "not DONE" and post two comments.
+    #
+    # Bounded on purpose: each in-flight job can hold a repo snapshot
+    # (snapshot_max_total_bytes, 25 MB) plus an LLM connection, so the ceiling is
+    # memory/`worker_concurrency`, not CPU. Keep it under the provider's own
+    # concurrency limit — Groq rate-limits per key, and a worker that exceeds it
+    # just collects 429s, which is slower than queueing.
+    worker_concurrency: int = 4
+    # Reusable HTTP pool toward the GitHub API. One client per process with
+    # keep-alive removes a TCP+TLS handshake from every call, which is ~4-7
+    # handshakes per job (diff, tarball, comment, permission check).
+    http_max_connections: int = 20
+    http_max_keepalive: int = 10
+    http_keepalive_expiry_s: float = 30.0
 
     # --- Later phases (declared now so config is complete) ---
     qdrant_url: str = "http://localhost:6333"
