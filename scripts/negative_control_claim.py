@@ -19,6 +19,8 @@ Run: ``python scripts/negative_control_claim.py``
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import pathlib
 import subprocess
 import sys
@@ -26,6 +28,18 @@ import sys
 WORKER = pathlib.Path("app/worker.py")
 CONCURRENCY = "tests/test_worker_concurrency.py"
 CRASH = "tests/test_worker_crash.py"
+MULTIPROCESS = "tests/test_worker_multiprocess.py"
+
+
+def postgres_available() -> bool:
+    """Can the cross-process control run? Same rule as the test fixture.
+
+    A control that cannot run must say so and be *excluded*, never quietly pass:
+    "the guard is load-bearing" and "we never checked" are different claims.
+    """
+    if os.environ.get("AUTOPR_TEST_POSTGRES_URL", "").strip():
+        return True
+    return importlib.util.find_spec("pgserver") is not None
 
 
 class Control:
@@ -48,6 +62,9 @@ class Control:
         # collection error and no FAILED lines — i.e. a bar that looks red for the
         # wrong reason. This drops the continuation entirely.
         self.drop_continuation = drop_continuation
+        # Controls whose tests need a real Postgres; skipped (and reported as
+        # skipped) on a machine without one.
+        self.requires_postgres = False
 
 
 CONTROLS = (
@@ -72,7 +89,21 @@ CONTROLS = (
             "test_retries_capped_then_escalated",
         ),
     ),
+    Control(
+        name="claim disabled, same test but across processes (needs Postgres)",
+        find="PRJob.status.in_([JobStatus.QUEUED, JobStatus.PENDING])",
+        replace="PRJob.id.isnot(None),  # NEGATIVE CONTROL: unconditional claim",
+        drop_continuation="| ((PRJob.status == JobStatus.PROCESSING)",
+        tests=(MULTIPROCESS,),
+        must_fail=(
+            "test_processes_racing_on_one_job_run_the_handler_once",
+            "test_many_processes_over_many_jobs_lose_nothing",
+        ),
+    ),
 )
+
+# The cross-process control is the only one that needs a server.
+CONTROLS[-1].requires_postgres = True
 
 
 def run_tests(tests: tuple[str, ...]) -> tuple[set[str], str]:
@@ -139,7 +170,19 @@ def run_control(control: Control) -> bool:
 
 
 def main() -> int:
-    ok = all(run_control(control) for control in CONTROLS)
+    have_pg = postgres_available()
+    results: list[bool] = []
+    for control in CONTROLS:
+        if control.requires_postgres and not have_pg:
+            print()
+            print(f"[{control.name}]")
+            print(
+                "  SKIPPED: no Postgres — set AUTOPR_TEST_POSTGRES_URL or install pgserver "
+                "(the cross-process half of this control is then unverified here, not passing)"
+            )
+            continue
+        results.append(run_control(control))
+    ok = all(results)
     if not ok:
         return 1
     checks = subprocess.run(

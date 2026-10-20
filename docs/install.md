@@ -203,6 +203,26 @@ curl -s -H "Authorization: Bearer $AUTOPR_API_TOKEN" https://your-host/installat
 # {"count":1,...,"installations":[{"installation_id":12345,"account":"you","active":true,"jobs":1,...}]}
 ```
 
+### Prove the whole chain with one command
+
+The steps above are individual proofs. This one is the end-to-end proof, against real
+credentials and a real repository — run it once after the App is installed:
+
+```bash
+python scripts/verify_installation.py   --installation 12345   --repo your-org/your-repo   --login your-github-login   --base-url https://your-host
+```
+
+It checks, in order, and prints PASS/FAIL for each: the private key parses, the JWT verifies
+(RS256, `iss`, the 600 s cap), GitHub accepts it at `GET /app`, the installation exists, an
+installation token is minted (`ghs_…`, unexpired), the repo is visible to that installation,
+`repo -> installation` resolves to the same id, and the collaborator permission comes back.
+Then it **stops**: `webhook_delivery` is reported as MANUAL, because only GitHub can deliver a
+webhook (redeliver the Ping in the App's *Advanced* tab and confirm `200`).
+
+Add `--comment <PR> --yes` to post one comment and prove the write path too. Exit code `0`
+means every check passed; a non-zero code names the step that failed, which is the step whose
+configuration is wrong.
+
 **Set `AUTOPR_GITHUB_DRY_RUN=false` and restart when you want real comments.** Until you do,
 everything runs and logs but nothing is posted — the most common "it does nothing" is simply
 dry-run still on.

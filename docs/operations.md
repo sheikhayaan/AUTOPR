@@ -142,6 +142,29 @@ times per job. Reuse measured **291 ms → 7.8 ms per call** on loopback. The
 token is per-request, never on the client, so a shared pool cannot carry one
 tenant's credential into another's call (`tests/test_http_client.py`).
 
+### 4.2 Prove the claim across processes, on your own Postgres
+
+The concurrency argument above is the one you would bet a tenant's PR on, so it
+is not left at "reasoned about". Two suites take a real server, and both skip
+without one:
+
+```bash
+# a real Postgres without Docker, if you do not have one running
+uv pip install pgserver
+
+pytest tests/test_worker_multiprocess.py -v    # 8 OS processes, one job, one run
+pytest tests/test_migrations_postgres.py -v    # up -> down -> up, asserting state
+```
+
+Point them at a server you already have with
+`AUTOPR_TEST_POSTGRES_URL=postgresql+psycopg://user:pass@host:5432/db`. CI runs
+both against `postgres:16` and **fails if either skips**, because a skipped
+concurrency test in a job that has a database is a silent pass.
+
+The control runs at process level too: `python scripts/negative_control_claim.py`
+now sabotages the claim a third time and requires the *cross-process* tests to go
+red, not just the thread-level ones.
+
 > If quota checks ever feel slow: the phase-17 migration adds indexes for the three
 > quota `COUNT`s and the reconcile scan. Measured over 200k rows, `117 ms` →
 > `1.1 ms`, because an unindexed `COUNT` costs a scan that grows with *history*.

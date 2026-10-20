@@ -142,6 +142,51 @@ def race_engine(tmp_path):
     eng.dispose()
 
 
+def normalize_postgres_url(url: str) -> str:
+    """Pin the driver in a Postgres URL.
+
+    A bare ``postgresql://`` makes SQLAlchemy reach for psycopg2, which this
+    project does not depend on (it uses psycopg 3). Server URLs obtained from a
+    test harness commonly arrive in the bare form.
+    """
+    if url.startswith("postgresql+psycopg://") or url.startswith("postgresql+psycopg2://"):
+        return url
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://") :]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
+
+
+@pytest.fixture(scope="session")
+def postgres_url(tmp_path_factory):  # noqa: ANN001, ANN201 - pytest fixtures
+    """A real PostgreSQL URL, or skip.
+
+    Two sources, in order:
+
+    1. ``AUTOPR_TEST_POSTGRES_URL`` — what CI uses (a `postgres:16` service
+       container). The CI job fails rather than skips, because for CI the whole
+       point is to run these.
+    2. ``pgserver`` — real PostgreSQL binaries bundled as a Python package, so a
+       developer gets a genuine postmaster, real row locks and real MVCC without
+       installing anything or starting Docker.
+
+    With neither, the tests skip: they are additive proof, not a gate the rest of
+    the suite depends on.
+    """
+    external = os.environ.get("AUTOPR_TEST_POSTGRES_URL", "").strip()
+    if external:
+        return normalize_postgres_url(external)
+
+    pgserver = pytest.importorskip(
+        "pgserver",
+        reason="set AUTOPR_TEST_POSTGRES_URL or `pip install pgserver` to run the Postgres tier",
+    )
+    data_dir = tmp_path_factory.mktemp("pg") / "data"
+    server = pgserver.get_server(str(data_dir), cleanup_mode=None)
+    return normalize_postgres_url(str(server.get_uri()))
+
+
 @pytest.fixture()
 def redis_client():
     # A single shared fakeredis server instance so multiple clients/consumers

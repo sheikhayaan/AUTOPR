@@ -480,6 +480,14 @@ defects this work exposed (a leaked claim on handler failure, and a naive-dateti
 inside the ORM-evaluated `UPDATE`), is in
 [`docs/decisions/phase-17.md`](docs/decisions/phase-17.md).
 
+Phase 18 crossed the boundary that reasoning cannot: **8 separate operating-system processes,
+one real Postgres, one job — one run.** Seven tests pin it, including the negative control
+that a *live* lease is not stolen, so "the stale lease was reclaimed" cannot pass for a claim
+that ignores `updated_at` altogether. Same phase: the migration cycle is now asserted
+(`downgrade base` leaves **no tables**; models and migrations do not drift), and the App chain
+became a single command. Details, including the two harness bugs that looked exactly like
+product bugs: [`docs/decisions/phase-18.md`](docs/decisions/phase-18.md).
+
 The last two rows are loopback and SQLite: they measure client construction, protocol
 overhead and query plan shape. They are **not** WAN latency or Postgres timings.
 
@@ -513,11 +521,11 @@ equal tokens × price, and unmeasured inputs must stay labelled.
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 7,319 | 36 | 33.8% |
-| Tests (`tests/`) | 7,977 | 42 | 36.9% |
-| Dashboard (`frontend/src`) | 4,205 | 37 | 19.4% |
-| Tooling (`scripts/`, `alembic/`) | 2,135 | 11 | 9.9% |
-| **Total** | **21,636** | **126** | **100%** |
+| Backend (`app/`) | 7,319 | 36 | 31.8% |
+| Tests (`tests/`) | 8,875 | 45 | 38.6% |
+| Dashboard (`frontend/src`) | 4,205 | 37 | 18.3% |
+| Tooling (`scripts/`, `alembic/`) | 2,603 | 12 | 11.3% |
+| **Total** | **23,002** | **130** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
 from the tree. Tests are 35% of the codebase, which is the ratio a service whose failure
@@ -947,7 +955,8 @@ that auto-posts attacker-chosen *text* as a comment — never code, never a push
 
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
-<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>452 passed, 5 skipped</b> (454 when a Docker daemon is running) &mdash; 457 collected</td></tr>
+<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>478 passed, 5 skipped</b> (480 when a Docker daemon is running) &mdash; 483 collected</td></tr>
+<tr><td>Cross-process claiming</td><td><code>pytest tests/test_worker_multiprocess.py</code></td><td><b>7 passed against a real Postgres</b> &mdash; 8 OS processes racing one job run the handler <b>once</b>; a crashed worker hands the row back to another <em>process</em>; a live lease is not stolen (negative control)</td></tr>
 <tr><td>Concurrency safety</td><td><code>python scripts/negative_control_claim.py</code></td><td><b>2 negative controls</b> &mdash; disabling the job claim or the failure release turns 2&ndash;3 tests red, and each control restores <code>app/worker.py</code> byte-identically</td></tr>
 <tr><td>Optimisation benchmark</td><td><code>python scripts/bench_optimisations.py</code></td><td><b>2.8&ndash;3.1&times;</b> worker throughput, <b>37&times;</b> per GitHub call, <b>106&times;</b> quota check &mdash; each measured against the real code, not a stand-in</td></tr>
 <tr><td>Capacity model</td><td><code>python scripts/capacity_plan.py</code> + <code>pytest tests/test_capacity.py</code></td><td><b>21 tests</b> &mdash; measured inputs track the bench artifact, cost equals tokens &times; price, and every unmeasured input is labelled ASSUMPTION in the output</td></tr>
@@ -962,14 +971,16 @@ that auto-posts attacker-chosen *text* as a comment — never code, never a push
 <tr><td>Format (frontend)</td><td><code>prettier --check</code></td><td><b>clean</b></td></tr>
 <tr><td>Migrations</td><td>alembic up → down → up on real Postgres</td><td><b>green in CI</b></td></tr>
 <tr><td>Docs &amp; figures</td><td><code>pytest tests/test_docs_assets.py</code></td><td><b>17 passed</b> — figures match the tree, audit is clean, numbers do not drift</td></tr>
-<tr><td>Sandbox boundary</td><td>Docker-gated tests, job <b>fails if they skip</b></td><td><b>2 passed in CI</b></td></tr>
-<tr><td>Live GitHub contract</td><td><code>tests/test_github_live.py</code></td><td>3 tests, weekly + on demand</td></tr>
+<tr><td>Sandbox boundary</td><td><code>ci.yml</code> &rarr; <code>sandbox</code> job</td><td>Builds the image, runs the 2 Docker-gated tests and <b>fails on <code>skipped</code></b> &mdash; a laptop may skip them, that job may not</td></tr>
+<tr><td>Live GitHub contract</td><td><code>github-live.yml</code></td><td>3 tests, weekly (<code>schedule</code>) + <code>workflow_dispatch</code>; with no token secret the run <b>warns that the contract is unverified</b> instead of claiming it passed</td></tr>
 </table>
 
 The 5 skips are deliberate and named: **3** need a real GitHub token, and **2** are the
-Docker-gated sandbox tests, which skip when no daemon is present (they run in the dedicated CI
-job, which greps its own output and fails on `skipped`). With Docker running locally the count
-becomes 454 passed / 3 skipped — both numbers are honest, which one you see depends on your host. The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
+Docker-gated sandbox tests, which skip when no daemon is present. Locally those 2 are the
+honest outcome; in the dedicated `sandbox` CI job the image is built and a skip is a failure,
+because there a skip would mean the boundary silently stopped being tested. With Docker
+running locally the count becomes 454 passed / 3 skipped — both numbers are honest, which one
+you see depends on your host. The suite is hermetic — SQLite, `fakeredis`, mocked LLM — and pins its own posture in
 `tests/conftest.py`, so a developer's `.env` cannot change what it asserts.
 
 ```mermaid
@@ -978,12 +989,12 @@ gantt
     dateFormat YYYY-MM-DD
     axisFormat %b %d
     section Backend
-    pytest total (406)          :done, a1, 2026-01-01, 29d
+    pytest total (483)          :done, a1, 2026-01-01, 34d
     routing + graph (43)        :done, a2, 2026-01-01, 5d
     ingest + worker (46)        :done, a3, 2026-01-01, 5d
     security + auth (22)        :done, a4, 2026-01-01, 3d
     section Frontend
-    vitest total (62)           :done, b1, 2026-01-01, 6d
+    vitest total (63)           :done, b1, 2026-01-01, 6d
 ```
 
 ---
@@ -1191,31 +1202,42 @@ tells you to keep it in the secret store; nothing in the code can verify that yo
 conditional `UPDATE`, which prevents two workers from running one job *at the same time*.
 If a job runs longer than `AUTOPR_RECLAIM_IDLE_MS` (15 min), a reclaim can run it again:
 double LLM spend, never double side effects (the `job_results` ledger is the backstop).
-Cross-process claiming is reasoned about but only the in-process case is tested.
+That is the only untested corner of the claim: cross-*process* claiming is now measured on a
+real Postgres — 8 processes, one job, one run (`tests/test_worker_multiprocess.py`) — so the
+lease window is the remaining assumption, not the claim itself.
 - **Measured in-process.** The latency table is `TestClient` + `fakeredis` + SQLite. It is
   reproducible anywhere and pessimistic about nothing; a deployed run adds real network. The
   worker numbers in `scripts/bench_optimisations.py` use a `sleep` for provider latency, so
   they measure scheduling, not a model.
 - **The throughput numbers are not a capacity plan.** Concurrency is measured to help
-  (2.8–3.1× at 4, capped by SQLite write serialisation); the default of 4 is a memory/rate-limit judgement, not a measured optimum,
-  and nothing here has been run against two worker processes, real Postgres, or a real
-  provider under load.
+  (2.8–3.1× at 4, capped by SQLite write serialisation); the default of 4 is a memory/rate-limit judgement, not a measured optimum.
+  Since phase 18 the claim *has* been run by 8 separate processes against real Postgres; what
+  remains unmeasured is a real model provider under load — the worker benchmark still uses a
+  `sleep` for provider latency, so it measures scheduling, not inference.
 - **LLM agents are mocked in tests.** The suite proves the *plumbing* deterministically; the
   quality of a review is not covered by a test, and cannot be.
 - **Prompt injection is unsolved, and now has a per-tenant blast radius.** A malicious diff
   can still make the bot post attacker-chosen *text* as a comment — never code, never a push.
   In App mode the injection arrives on a stranger's PR, so the blast radius is that tenant's
   repo rather than a single operator's.
-- **SQLite is the default locally**, which serialises writes; the concurrency test proves the
-  logic, not Postgres lock behaviour.
+- **SQLite is the default locally**, which serialises writes, so the hermetic suite proves the
+  *logic* rather than Postgres lock behaviour. That distinction is now covered by a separate
+  tier: `tests/test_worker_multiprocess.py` runs **8 operating-system processes against a real
+  Postgres** racing for one job, and `tests/test_migrations_postgres.py` proves the migration
+  cycle on real DDL. Both skip without a server and run in CI against `postgres:16`.
 - **RAG is optional and off by default** (`AUTOPR_RAG_ENABLED=false`); with it off the agents
   reason from the diff alone.
 - **The sandbox is a defence-in-depth boundary, not a security product.** Non-root,
   `--network none`, read-only rootfs and resource caps, but it has not been adversarially
   reviewed to run untrusted third-party code at multi-tenant scale.
-- **No real installation has been run by the author.** App registration, token minting and a
-  webhook delivered by GitHub's own servers are verified by construction and by a local
-  socket test, not by pointing a real App at a real repository.
+- **No real installation has been run by the author**, because registering a GitHub App needs a
+  browser session this project cannot supply. What exists instead is
+  `scripts/verify_installation.py`: one command that runs the whole chain against real
+  credentials — private key parses → JWT verifies → `GET /app` → installation token minted →
+  repos visible → permission lookup → optional comment — and prints PASS/FAIL per step. Its own
+  16 tests pin every failure mode (wrong token prefix, expired token, repo outside the
+  installation, rejected JWT), and `github-live.yml` runs it weekly the moment App secrets are
+  configured. Until that happens, treat App mode as *built and unit-proven, not yet lived-in*.
 
 ---
 
