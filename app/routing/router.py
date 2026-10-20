@@ -42,6 +42,41 @@ from app.routing.policy import Action, RoutingDecision
 log = structlog.get_logger()
 
 
+def _notify_queued(github: GitHubClient | None, state: Mapping[str, Any], row: Any) -> None:
+    """Comment on the PR that an action is queued, and how to approve it.
+
+    Deliberately narrow: only fires when the state carries a tenant
+    (`installation_id`), because a single-operator install already has a
+    dashboard and posting here would change its behaviour for no benefit. It is
+    best-effort — a failed notice must never turn a successful enqueue into a
+    failed run, and it never changes `action_taken`, because the decision really
+    is queued whether or not the tenant was told.
+    """
+    if state.get("installation_id") is None:
+        return
+    client = github or FakeGitHubClient()
+    repo = str(state.get("repo") or "")
+    pr_number = state.get("pr_number")
+    if not repo or pr_number is None:
+        return
+    body = (
+        f"### Action queued for approval\n\n"
+        f"`#{row.id}` · **{row.action}** · risk `{row.risk}`\n\n"
+        f"This one changes code, so it waits for a human. A maintainer can run:\n\n"
+        f"```\n/autopr approve {row.id}\n```\n\n"
+        f"`/autopr status` lists what is waiting, `/autopr reject {row.id}` declines it."
+    )
+    try:
+        result = client.post_issue_comment(repo, int(pr_number), body)
+    except Exception as exc:  # noqa: BLE001 - a notice must never fail the run
+        log.warning("router.notice_failed", id=row.id, error=repr(exc))
+        return
+    if result.ok:
+        log.info("router.notified_queued", id=row.id, url=result.url)
+    else:
+        log.warning("router.notice_refused", id=row.id, detail=result.detail)
+
+
 def execute_decision(
     github: GitHubClient, decision: RoutingDecision | dict, state: Mapping[str, Any]
 ) -> ActionResult:
@@ -128,6 +163,13 @@ def router_node(
                         base["action_url"] = row.result_url or ""
                         log.info("router.queued_already_executed", id=row.id)
                         return base
+                    # Tell the tenant there is something to approve. A tenant has
+                    # no dashboard session, so without this comment a queued
+                    # decision is invisible: they would never learn that an id
+                    # exists, and the approval path would be dead code. Only on
+                    # first creation, so a redelivery cannot spam the thread.
+                    if _created:
+                        _notify_queued(github, state, row)
                     # An earlier *auto* post attempt failed and left the row
                     # FAILED. `list_pending` only shows PENDING, so without
                     # re-opening it this human-gated decision would be invisible

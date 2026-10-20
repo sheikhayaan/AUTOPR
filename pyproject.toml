@@ -23,6 +23,7 @@ dependencies = [
     "tiktoken>=0.8",
     "alembic>=1.19.1",
     "prometheus-client>=0.26.0",
+    "pyjwt[crypto]>=2.9",
 ]
 
 [project.optional-dependencies]

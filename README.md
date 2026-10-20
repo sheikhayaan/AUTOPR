@@ -8,8 +8,8 @@
 **Every code-changing action, and every review above `low` risk, is queued for a human.**
 **Dry-run by default: out of the box, it touches nothing.**
 
-![tests](https://img.shields.io/badge/tests-323%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
-![coverage](https://img.shields.io/badge/coverage-87%25-2ea043?style=flat-square)
+![tests](https://img.shields.io/badge/tests-401%20passed%20%C2%B7%202%20docker%20%C2%B7%203%20live-2ea043?style=flat-square)
+![coverage](https://img.shields.io/badge/coverage-86%25-2ea043?style=flat-square)
 ![mypy](https://img.shields.io/badge/mypy-30%20files%20clean-2ea043?style=flat-square)
 ![ruff](https://img.shields.io/badge/ruff-64%20files%20clean-2ea043?style=flat-square)
 ![frontend](https://img.shields.io/badge/vitest-62%20passed-2ea043?style=flat-square)
@@ -44,11 +44,11 @@
 | 6 | [Core pipeline](#core-pipeline) | Job and decision state machines + per-stage guards |
 | 7 | [Data model](#data-model) | `erDiagram`, PK/FK, and where vectors vs rows live |
 | 8 | [Measured performance](#measured-performance) | 1,008 timed HTTP calls + 270 policy calls, ingestion breakdown, cold-start warning |
-| 9 | [Codebase composition](#codebase-composition) | 16,545 lines, counted at generation time |
+| 9 | [Codebase composition](#codebase-composition) | 19,300 lines, counted at generation time |
 | 10 | [Repository map](#repository-map) | The 15 files that carry the design |
 | 11 | [Quickstart](#quickstart) | Local two-terminal, Docker, and a 60-second smoke test |
 | 12 | [Configuration](#configuration) | All 42 settings with real defaults |
-| 13 | [API reference](#api-reference) | 10 endpoints, auth column, real payloads |
+| 13 | [API reference](#api-reference) | 11 endpoints, auth column, real payloads |
 | 14 | [Security model](#security-model) | 8 layers, each with the function that enforces it |
 | 15 | [Quality gates](#quality-gates) | The exact commands and their results |
 | 16 | [Deployment](#deployment) | Fly.io, Compose, bare metal |
@@ -129,6 +129,12 @@ test that enforces the claim, so you can check it rather than trust it.
 | | Per-repo and per-instance job quotas (`429` + `Retry-After`) | ✅ |
 | | Read-only public demo mode (approve/reject `403` for everyone) | ✅ |
 | | Trusted-proxy `X-Forwarded-For` handling (per-visitor limits) | ✅ |
+| **Multi-tenant** | GitHub App auth — per-installation tokens minted on demand, cached | ✅ |
+| | Self-serve install: a stranger adds the App to their repos, then opens a PR | ✅ |
+| | Suspension / uninstall stop work immediately (separate, reversible states) | ✅ |
+| | Per-installation daily quota, so one tenant cannot drain the shared budget | ✅ |
+| | Approval from the PR thread: `/autopr approve 42`, no account needed | ✅ |
+| | Authority checked against GitHub's own collaborator permissions | ✅ |
 | **Reasoning** | `code_reviewer` — findings + risk score | ✅ |
 | | `test_generator` — draft tests, never executed | ✅ |
 | | `ci_monitor` — failure classification + diagnosis | ✅ |
@@ -460,19 +466,19 @@ python scripts/bench_api.py --scale 3       # 3x samples for a tighter p99
 ## Codebase composition
 
 <div align="center">
-<img src="./docs/assets/donut.svg" alt="Composition of 16,545 lines across 109 files" width="100%">
+<img src="./docs/assets/donut.svg" alt="Composition of 19,300 lines across 117 files" width="100%">
 </div>
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 5,348 | 31 | 32.3% |
-| Tests (`tests/`) | 5,633 | 35 | 34.0% |
-| Dashboard (`frontend/src`) | 4,205 | 37 | 25.4% |
-| Tooling (`scripts/`, `alembic/`) | 1,359 | 6 | 8.2% |
-| **Total** | **16,545** | **109** | **100%** |
+| Backend (`app/`) | 6,635 | 34 | 34.4% |
+| Tests (`tests/`) | 7,028 | 39 | 36.4% |
+| Dashboard (`frontend/src`) | 4,205 | 37 | 21.8% |
+| Tooling (`scripts/`, `alembic/`) | 1,432 | 7 | 7.4% |
+| **Total** | **19,300** | **117** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
-from the tree. Tests are 31% of the codebase, which is the ratio a service whose failure
+from the tree. Tests are 35% of the codebase, which is the ratio a service whose failure
 mode is "writes to your repository" should have.
 
 ---
@@ -487,7 +493,7 @@ mode is "writes to your repository" should have.
 <summary><b>Plain tree with line counts</b></summary>
 
 ```text
-AUTOPR/                                    16,545 lines · 109 files
+AUTOPR/                                    19,300 lines · 117 files
 ├── app/                                    5,067
 │   ├── main.py                               733   webhook + ops API + reads
 │   ├── worker.py                             413   consume · reclaim · reconcile
@@ -515,7 +521,7 @@ AUTOPR/                                    16,545 lines · 109 files
 │   │   ├── state.py                           64   the typed graph state
 │   │   └── llm.py                             41   Groq client factory
 │   └── sandbox/{runner,verifier,policy}.py    450   container flags and caps
-├── tests/                                  5,633   323 tests in 35 files
+├── tests/                                  7,028  403 tests in 39 files
 ├── frontend/src/                           4,141   9 test files, 4 routes, typed client
 ├── docs/                                           architecture · operations · api · 14 ADRs
 ├── docs/assets/                                    generate.py + 6 SVGs + bench_result.json
@@ -592,6 +598,56 @@ curl -s -X POST localhost:8000/reviews/1/approve -H "Authorization: Bearer $AUTO
 
 ---
 
+## Install it on someone else's repo
+
+This is the difference between "my bot" and "a bot". With GitHub App credentials configured,
+anyone can install AutoPR on their own repositories and never see a token, a dashboard login, or
+an operator.
+
+**Setup (operator, once).** Register a GitHub App → point its webhook at
+`https://your-host/webhook` with the same `AUTOPR_WEBHOOK_SECRET`, grant *Contents: read*,
+*Pull requests: write*, *Issues: write*, *Checks: read* → subscribe to `pull_request`,
+`check_run`, `workflow_run`, `issue_comment`, `installation`, `installation_repositories` → put
+the App id and the downloaded `.pem` into `AUTOPR_GITHUB_APP_ID` and
+`AUTOPR_GITHUB_APP_PRIVATE_KEY` (single-line with `
+` is fine) → set
+`AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY`. That's it: `AUTOPR_GITHUB_APP_SLUG` publishes the
+install link at `GET /installations` and `GET /stats`.
+
+**Then a customer's whole experience is this:**
+
+```
+1. Install  →  github.com/apps/<your-slug>/installations/new   (their choice of repos)
+2. Open a PR                                                   (nothing else to configure)
+3. 30 s later a review appears on the PR
+4. If it proposes a change, the bot says so and waits:
+   "Action queued for approval · #42"   →   /autopr approve 42
+```
+
+No signup, no token, no email. Step 4 is the human gate: the action fires only if GitHub says the
+commenter has `admin`, `maintain` or `write` on that repo — and it fires with *their*
+installation's token, on *their* quota.
+
+```mermaid
+sequenceDiagram
+    participant M as Maintainer
+    participant GH as GitHub
+    participant A as AutoPR
+    Note over M,GH: install (once) — App JWT → installation token
+    M->>GH: opens a PR
+    GH->>A: pull_request (HMAC-signed, carries installation id)
+    A->>A: enrol tenant → quota → dedup → queue
+    A->>GH: comment: review + "approve with /autopr approve 42"
+    M->>GH: "/autopr approve 42"
+    GH->>A: issue_comment delivery
+    A->>GH: collaborators/{login}/permission → "write"
+    A->>GH: post_issue_comment (installation token)
+    Note over A,GH: one call. It cannot push, merge, or open PRs.
+```
+
+Tenants are visible to the operator at `GET /installations` — id, account, active/suspended,
+jobs and pending reviews — which is also how you answer "who is using the budget?".
+
 ## Configuration
 
 42 settings, all `AUTOPR_`-prefixed, all defined in [`app/config.py`](app/config.py). The app
@@ -612,6 +668,12 @@ catastrophic in effect: a forgeable webhook, and an `/approve` endpoint that ans
 | `AUTOPR_GITHUB_TOKEN` | ⬜ | *(empty)* | Enables live reads/writes. Only meaningful with dry-run off. |
 | `AUTOPR_REQUIRE_AUTH_FOR_READS` | ⬜ | `false` | Gate `/jobs`, `/reviews`, `/stats` behind the token too. **Set true on any internet-reachable instance.** |
 | `AUTOPR_ALLOWED_REPOS` | ⬜ | *(empty)* | Comma-separated `owner/name` allowlist. Empty = any repo with a signed webhook. Set it on public repos, or fork PRs bill your LLM key. |
+| `AUTOPR_GITHUB_APP_ID` | ⬜ | — | GitHub App id. With the private key, switches the instance to multi-tenant. |
+| `AUTOPR_GITHUB_APP_PRIVATE_KEY` | ⬜ | — | The App's `.pem` content; a single line with `
+` escapes is accepted. |
+| `AUTOPR_GITHUB_APP_SLUG` | ⬜ | — | Public App slug; publishes the self-serve install link in `/stats` + `/installations`. |
+| `AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY` | ⬜ | `0` (off) | Per-tenant daily ceiling, so one installation cannot drain the shared budget. Required when public mode is on. |
+| `AUTOPR_GITHUB_COMMENT_COMMANDS` | ⬜ | `true` | `/autopr approve` in the PR thread — the only approval path a tenant has. |
 | `AUTOPR_PUBLIC_MODE` | ⬜ | `false` | Read-only public demo. Refuses to boot unless allowlist + dry-run + quotas are set; then approve/reject return 403 for *everyone*. |
 | `AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR` | ⬜ | `0` (off) | Soft cost ceiling per repo per hour, answered `429` + `Retry-After`. Required > 0 in public mode. |
 | `AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY` | ⬜ | `0` (off) | Soft instance-wide daily ceiling; the bound a stranger cannot escape. Required > 0 in public mode. |
@@ -698,7 +760,7 @@ catastrophic in effect: a forgeable webhook, and an `/approve` endpoint that ans
 
 ## API reference
 
-Ten endpoints. Auth column is literal: what the dependency is doing right now.
+Eleven endpoints. Auth column is literal: what the dependency is doing right now.
 
 | Method | Path | Auth | Returns |
 |---|---|---|---|
@@ -712,6 +774,7 @@ Ten endpoints. Auth column is literal: what the dependency is doing right now.
 | `GET` | `/stats` | token if reads gated | KPI counters for the dashboard |
 | `GET` | `/jobs` | token if reads gated | `Page[Job]` — `count/total/limit/offset` |
 | `GET` | `/reviews` | token if reads gated | `Page[Review]` — same envelope |
+| `GET` | `/installations` | token if reads gated | tenants, active state, job + pending counts, install URL |
 
 <details>
 <summary><b>POST /webhook — request and response</b></summary>
@@ -796,6 +859,11 @@ these two numbers rather than guessing, and refetches immediately when the query
 | Public posture | `AUTOPR_PUBLIC_MODE` makes approve/reject 403 for everyone (operator token included) and forces allowlist + dry-run + quotas at boot | `config.py::_enforce_public_mode`, `main.py` approve/reject |
 | Spend ceiling | Per-repo/hour and instance/day job quotas, checked before the INSERT; a refusal costs no row and no model call | `quota.py::quota_reason` (`test_public_mode.py`) |
 | Client identity | `X-Forwarded-For` honoured only when the socket peer is a declared trusted proxy, walking the chain from the right | `ratelimit.py::resolve_client_ip` (`test_client_ip.py`) |
+| Tenant credentials | App JWT (RS256, 9 min) mints per-installation tokens; cached until 60 s before expiry. No instance-wide repo credential exists in multi-tenant mode | `github_app.py::AppAuth` (`test_tenancy.py`) |
+| Tenant attribution | Every write resolves the owning installation from the repo; if the App is not installed there, the write is **refused** rather than falling back to a PAT | `github_app.py::TenantGitHubClient` |
+| Approval identity | The commenter's login from an HMAC-signed payload, plus a live collaborator-permission check (admin/maintain/write). AutoPR keeps no ACL of its own | `commands.py` (`test_commands.py`) |
+| Cross-tenant access | A decision is addressable only by its own installation **and** its own repo; ids from elsewhere answer "no such decision" | `commands.py::_decision_for` |
+| Tenant lifecycle | `suspend` pauses, `deleted` is terminal and cannot be revived by a replayed `created` event | `tenancy.py::apply_event` |
 | Write surface | The client exposes exactly one write: `post_issue_comment` | `tests/test_github_client.py::test_write_surface_is_comment_only` |
 | Human approval | CAS claim, terminal states, audit log with actor IP | `routing/store.py::claim_approval()` |
 | Code execution | `--network none`, non-root, read-only rootfs, memory/CPU/PID caps, timeout | `sandbox/runner.py` |
@@ -811,10 +879,21 @@ because each one turns a demo into either a free LLM proxy for strangers or a re
 service for whoever finds the URL. `AUTOPR_API_TOKEN` being empty is a boot failure in both
 postures; `AUTOPR_TRUSTED_PROXIES` is what keeps the per-IP limiter honest behind a proxy.
 
-**Threat model, stated plainly.** This is a single-operator, self-hosted tool. There is no
-login, no session, no per-user attribution — the bearer token belongs to one operator and
-the dashboard is meant to sit behind your own SSO proxy if you want attribution. Multi-tenant
-isolation is *not* implemented, and the roadmap says so rather than implying otherwise.
+**Two tenancy shapes.** Without App credentials this remains a *single-operator* tool: one
+bearer token, one operator, the dashboard meant to sit behind your own SSO proxy. With
+`AUTOPR_GITHUB_APP_ID` + a private key it becomes *multi-tenant*: each installation gets its own
+minted token, its own rows, its own quota, and its own approval thread. What it still has no
+concept of is a **user account** — there is no login, no session, and no per-person attribution
+beyond "GitHub says this login has write access to this repo". That is the deliberate trade: an
+identity we can never get wrong because we never store it.
+
+**Threat model, stated plainly.** Strangers are now in scope by design, and exactly three things
+bound them: the installation token (their repos only), the human gate (nothing code-changing
+fires without a permission-checked human), and the quotas (spend is capped per repo, per tenant,
+per instance). The residual risks are named rather than hidden: a leaked App private key mints
+tokens for every installation until it is rotated, the webhook secret is shared by all tenants
+(one leak is instance-wide), and a prompt-injected diff could still produce a `low`-risk review
+that auto-posts attacker-chosen *text* as a comment — never code, never a push.
 
 ---
 
@@ -822,9 +901,9 @@ isolation is *not* implemented, and the roadmap says so rather than implying oth
 
 <table>
 <tr><th align="left">Gate</th><th align="left">Command</th><th align="left">Result</th></tr>
-<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>323 passed, 5 skipped</b> (325 when a Docker daemon is running) &mdash; 328 collected</td></tr>
+<tr><td>Backend tests</td><td><code>uv run pytest</code></td><td><b>401 passed, 5 skipped</b> (403 when a Docker daemon is running) &mdash; 406 collected</td></tr>
 <tr><td>Security guards</td><td><code>uv run pytest tests/test_secure_boot.py tests/test_public_mode.py tests/test_client_ip.py</code></td><td><b>42 passed</b> across the three hardenings &mdash; token, allowlist, public mode, quotas, client IP &mdash; each with a negative control that proves the test fails when the guard is removed</td></tr>
-<tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>87%</b> (gate 78%)</td></tr>
+<tr><td>Coverage</td><td><code>uv run pytest --cov=app</code></td><td><b>86%</b> (gate 78%)</td></tr>
 <tr><td>Lint</td><td><code>ruff check app tests scripts docs/assets/generate.py</code></td><td><b>68 files, clean</b></td></tr>
 <tr><td>Format</td><td><code>ruff format --check</code></td><td><b>clean</b></td></tr>
 <tr><td>Types (backend)</td><td><code>mypy app</code></td><td><b>30 files, no issues</b></td></tr>
@@ -850,7 +929,7 @@ gantt
     dateFormat YYYY-MM-DD
     axisFormat %b %d
     section Backend
-    pytest total (323)          :done, a1, 2026-01-01, 29d
+    pytest total (406)          :done, a1, 2026-01-01, 29d
     routing + graph (43)        :done, a2, 2026-01-01, 5d
     ingest + worker (46)        :done, a3, 2026-01-01, 5d
     security + auth (22)        :done, a4, 2026-01-01, 3d
@@ -978,18 +1057,22 @@ timeline
       Phase 6-9 : crash safety + reclaim : snapshot caps : Alembic : RAG grounding
       Phase 10-13 : auth + audit : dry-run client : dashboard : sandbox verification
       Hardening : sticky gate : CAS approve : hermetic suite : E2E + load + live contract
+      Phase 15-16 : public mode : per-viewer IPs : GitHub App : per-tenant tokens
+      Installable : /autopr approve in the PR thread : per-tenant quota
     section Next
       Worker lease : heartbeat to remove duplicate LLM spend on genuine 15-min jobs
-      GitHub App : per-installation tokens instead of one operator PAT
-      GitHub-native approval : thumbs-up reaction so no login is ever needed
-      Multi-tenant : quotas, BYO key, per-tenant approval (weeks, not days)
+      BYO model key : each tenant's spend on their own Groq/OpenAI account
+      Per-seat billing : derive seats from installation_id activity
+      Reaction approvals : 👍 on the bot's comment as a one-click approval
 ```
 
 Honest status of the deferred items: **worker lease/heartbeat** is the only known gap in
 exactly-once *cost* — with more than one worker, a genuinely >15-minute job can be reclaimed
 and charged twice. External side effects stay exactly-once; only model spend duplicates.
-Multi-tenant isolation and per-user auth are out of scope for a single-operator console, and
-the Settings token flow is the supported path.
+**Per-user accounts** remain absent on purpose: tenancy is attributed to an installation and an
+approval is attributed to a GitHub login, both verified by GitHub, and there is no AutoPR account
+to phish, leak or reset. **BYO model keys** is the next real feature if you want tenants to pay
+their own inference bill rather than sharing yours.
 
 ---
 
@@ -999,7 +1082,7 @@ the Settings token flow is the supported path.
 uv sync --extra dev
 uv run ruff check app tests scripts && uv run ruff format app tests scripts
 uv run mypy app
-uv run pytest -q                              # 323 tests, ~25 s
+uv run pytest -q                              # 401 tests, ~28 s
 cd frontend && npm run lint && npm run typecheck && npm test
 python docs/assets/generate.py                # figures must regenerate clean
 ```

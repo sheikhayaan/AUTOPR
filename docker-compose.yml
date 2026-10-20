@@ -76,6 +76,12 @@ services:
       AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR: ${AUTOPR_QUOTA_JOBS_PER_REPO_PER_HOUR:-0}
       AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY: ${AUTOPR_QUOTA_JOBS_TOTAL_PER_DAY:-0}
       AUTOPR_TRUSTED_PROXIES: ${AUTOPR_TRUSTED_PROXIES:-}
+      # Multi-tenant (GitHub App). Empty = single-operator PAT mode, unchanged.
+      AUTOPR_GITHUB_APP_ID: ${AUTOPR_GITHUB_APP_ID:-}
+      AUTOPR_GITHUB_APP_PRIVATE_KEY: ${AUTOPR_GITHUB_APP_PRIVATE_KEY:-}
+      AUTOPR_GITHUB_APP_SLUG: ${AUTOPR_GITHUB_APP_SLUG:-}
+      AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY: ${AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY:-0}
+      AUTOPR_GITHUB_COMMENT_COMMANDS: ${AUTOPR_GITHUB_COMMENT_COMMANDS:-true}
       AUTOPR_CORS_ORIGINS: ${AUTOPR_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
       # Safety posture, passed through explicitly so the stack can never run in a
@@ -133,6 +139,15 @@ services:
       AUTOPR_ALLOWED_REPOS: ${AUTOPR_ALLOWED_REPOS:-}
       AUTOPR_GROQ_API_KEY: ${AUTOPR_GROQ_API_KEY:-}
       AUTOPR_HANDOFF_MODE: ${AUTOPR_HANDOFF_MODE:-false}
+      # The worker is the process that actually posts comments, so it needs the
+      # App credentials too — it resolves each job's installation token itself.
+      # Without them a multi-tenant stack would queue work and then be unable to
+      # speak for the tenant (the phase-15 lesson, repeated deliberately).
+      AUTOPR_GITHUB_APP_ID: ${AUTOPR_GITHUB_APP_ID:-}
+      AUTOPR_GITHUB_APP_PRIVATE_KEY: ${AUTOPR_GITHUB_APP_PRIVATE_KEY:-}
+      AUTOPR_GITHUB_APP_SLUG: ${AUTOPR_GITHUB_APP_SLUG:-}
+      AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY: ${AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY:-0}
+      AUTOPR_GITHUB_COMMENT_COMMANDS: ${AUTOPR_GITHUB_COMMENT_COMMANDS:-true}
       AUTOPR_GITHUB_DRY_RUN: ${AUTOPR_GITHUB_DRY_RUN:-true}
       AUTOPR_GITHUB_TOKEN: ${AUTOPR_GITHUB_TOKEN:-}
       # Snapshot + sandbox budgets matter most here: the worker is the process

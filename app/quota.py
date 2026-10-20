@@ -25,15 +25,22 @@ from app.config import settings
 from app.models import PRJob
 
 
-def _count_since(db: Session, cutoff: datetime, repo: str | None = None) -> int:
-    """Count jobs created since `cutoff`, optionally for one repo."""
+def _count_since(
+    db: Session,
+    cutoff: datetime,
+    repo: str | None = None,
+    installation_id: int | None = None,
+) -> int:
+    """Count jobs created since `cutoff`, optionally for one repo or one tenant."""
     stmt = select(func.count()).select_from(PRJob).where(PRJob.created_at >= cutoff)
     if repo is not None:
         stmt = stmt.where(PRJob.repo == repo)
+    if installation_id is not None:
+        stmt = stmt.where(PRJob.installation_id == installation_id)
     return db.execute(stmt).scalar_one()
 
 
-def quota_reason(db: Session, repo: str) -> str | None:
+def quota_reason(db: Session, repo: str, installation_id: int | None = None) -> str | None:
     """Return why this delivery should be refused, or None if it may proceed.
 
     Checked *before* the INSERT so a refusal costs no row, no stream message and
@@ -44,6 +51,18 @@ def quota_reason(db: Session, repo: str) -> str | None:
     per_repo = settings.quota_jobs_per_repo_per_hour
     if per_repo > 0 and _count_since(db, now - timedelta(hours=1), repo=repo) >= per_repo:
         return "quota_repo_hourly"
+    # Tenant ceiling. Without this, a multi-tenant instance has one global budget
+    # that the busiest tenant can consume entirely — a denial of service against
+    # every other customer, caused by the very ceiling (the daily total) that
+    # exists to protect the operator.
+    if installation_id is not None:
+        per_tenant = settings.quota_jobs_per_installation_per_day
+        if (
+            per_tenant > 0
+            and _count_since(db, now - timedelta(days=1), installation_id=installation_id)
+            >= per_tenant
+        ):
+            return "quota_installation_daily"
     total = settings.quota_jobs_total_per_day
     if total > 0 and _count_since(db, now - timedelta(days=1)) >= total:
         return "quota_instance_daily"

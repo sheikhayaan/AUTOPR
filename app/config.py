@@ -173,10 +173,27 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     # Token for outward actions. Empty => the client runs in dry-run (records
     # intended actions, touches nothing). You must opt in to real posting.
+    # Single-operator credential. Ignored for writes when App credentials are
+    # present: multi-tenancy means no instance-wide repository token exists.
     github_token: str = ""
     # Master safety switch: even with a token, dry_run=True keeps the system
     # from touching real repos. Default True — safe by default.
     github_dry_run: bool = True
+
+    # --- Phase 16: GitHub App (multi-tenant, strangers can install) ----------
+    # Supplying these two turns AutoPR from "my bot" into "a bot anyone can
+    # install": every write is then scoped to one installation, and approval
+    # moves into the PR thread (`/autopr approve`) where GitHub supplies both
+    # the identity and the permission check. Absent, the PAT path is unchanged.
+    github_app_id: int | None = None
+    github_app_private_key: str = ""  # PEM; escaped newlines accepted, see github_app.py
+    github_app_slug: str = ""  # public name, for the install link
+    # Per-tenant ceiling: one installation cannot monopolise the model budget.
+    # 0 = unlimited (a private install with one installation rarely needs it).
+    quota_jobs_per_installation_per_day: int = 0
+    # Roll-out switch for comment-driven approval. On by default when an App is
+    # configured, because that is the only approval path a stranger can use.
+    github_comment_commands: bool = True
     # Highest risk level the system will auto-comment on WITHOUT human approval.
     # trivial/low are safe (a comment changes no code); medium/high wait for a
     # human. Any code-changing action is always gated regardless of this.
@@ -249,6 +266,18 @@ class Settings(BaseSettings):
         return frozenset(r.strip().lower() for r in self.allowed_repos.split(",") if r.strip())
 
     @property
+    def multi_tenant_enabled(self) -> bool:
+        """True when this instance serves many installations rather than one operator."""
+        return bool(self.github_app_id and self.github_app_private_key.strip())
+
+    @property
+    def install_url(self) -> str:
+        """Where a stranger goes to install this App on their own repos."""
+        if not self.github_app_slug:
+            return ""
+        return f"https://github.com/apps/{self.github_app_slug}/installations/new"
+
+    @property
     def trusted_proxy_list(self) -> tuple[str, ...]:
         """Parse trusted_proxies into bare IP/CIDR strings for the IP resolver."""
         return tuple(p.strip() for p in self.trusted_proxies.split(",") if p.strip())
@@ -311,6 +340,12 @@ class Settings(BaseSettings):
                 "AUTOPR_PUBLIC_MODE=1 requires AUTOPR_GITHUB_DRY_RUN=true. A public "
                 "instance that can write to GitHub is a remote code-change service "
                 "for whoever reaches /approve; leave writes to a private deploy."
+            )
+        if self.multi_tenant_enabled and self.quota_jobs_per_installation_per_day <= 0:
+            raise ValueError(
+                "AUTOPR_PUBLIC_MODE=1 with GitHub App credentials needs "
+                "AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY. One tenant must not be "
+                "able to spend the budget every other tenant shares."
             )
         if self.quota_jobs_per_repo_per_hour <= 0 or self.quota_jobs_total_per_day <= 0:
             raise ValueError(

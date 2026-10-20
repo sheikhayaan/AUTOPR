@@ -77,6 +77,14 @@ class PRJob(Base):
     author: Mapped[str] = mapped_column(String(255), nullable=False)
     event: Mapped[str] = mapped_column(String(64), nullable=False, default="pull_request")
 
+    # Which installation (tenant) owns this work. NULL = the single-operator
+    # deployment: a PAT-driven instance has no installations, and every row it
+    # ever wrote predates tenancy. Keeping NULL meaningful means existing
+    # databases upgrade without a backfill guess, and tenancy queries can be
+    # written as `installation_id == X` (strict) without silently matching
+    # operator rows.
+    installation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus, native_enum=False, length=16),
         nullable=False,
@@ -149,6 +157,10 @@ class ReviewDecision(Base):
     repo: Mapped[str] = mapped_column(String(255), nullable=False)
     pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
     commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Tenant owner of the outward action. Approving a decision must use *this*
+    # installation's token, never another's — the reason it is materialised on
+    # the row instead of looked up from the repo name at approval time.
+    installation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     action: Mapped[str] = mapped_column(String(32), nullable=False)  # Action enum value
     risk: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
@@ -171,3 +183,55 @@ class ReviewDecision(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
+
+
+class Installation(Base):
+    """One GitHub App installation — i.e. one tenant.
+
+    Created from the `installation` webhook (or healed from a PR payload, which
+    carries the same object) and the reason a stranger can install this without
+    a human on our side: the row *is* the onboarding. `deleted_at` and
+    `suspended_at` are kept separate because GitHub distinguishes them and they
+    mean different things to an operator: suspended is reversible (billing,
+    abuse review), deleted is final and must stop all work immediately.
+
+    Not a cache of GitHub's data for its own sake — it is the tenancy boundary.
+    Every write resolves a token through an active row here, so revoking a row
+    revokes the credential's reach.
+    """
+
+    __tablename__ = "installations"
+    __table_args__ = (UniqueConstraint("installation_id", name="uq_installations_installation_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    installation_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    account_login: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    account_type: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+    # Repository selection the installer chose ("all" or "selected"). Informational:
+    # the real authority is GitHub's, enforced per-call by the installation token.
+    repository_selection: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    @property
+    def is_active(self) -> bool:
+        """Only an active row may mint tokens or have its work processed."""
+        return self.deleted_at is None and self.suspended_at is None
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<Installation {self.installation_id} {self.account_login!r}>"

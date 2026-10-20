@@ -21,6 +21,11 @@ class PRState(TypedDict):
     repo: str
     pr_number: int
     commit_sha: str
+    # Which GitHub App installation owns this work, or None on a single-operator
+    # install. Carried all the way to the router because that is where
+    # ReviewDecision.installation_id is written — and a decision with a NULL
+    # owner is, correctly, not approvable from any tenant's PR thread.
+    installation_id: NotRequired[int | None]
     changed_files: list[dict[str, str]]  # [{"path": ..., "patch": ...}, ...]
     # Optional: CI event data if this is a ci-failure webhook
     ci_logs: NotRequired[str]

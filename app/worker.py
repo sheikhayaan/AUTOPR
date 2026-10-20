@@ -108,6 +108,28 @@ def _index_snapshot(rag, repo: str, ref: str, snapshot: list[tuple[str, str]]) -
         _INDEXED.popitem(last=False)
 
 
+def job_state(job: PRJob, changed_files: list[dict[str, str]]) -> dict:
+    """The `PRState` seed for one job.
+
+    Extracted from the handler so the tenancy field can be asserted directly.
+    It was originally inlined, which let `installation_id` be dropped without any
+    test noticing: the router then wrote decisions with a NULL owner, and a
+    tenant's `/autopr approve` answered "no such decision" forever. A pure
+    function is testable; a closure buried three calls deep was not.
+    """
+    return {
+        "repo": job.repo,
+        "pr_number": job.pr_number,
+        "commit_sha": job.commit_sha,
+        "changed_files": changed_files,
+        # Tenancy travels with the job. Dropping it would park every queued
+        # decision at installation_id=NULL, which the command handler correctly
+        # refuses for tenants — the tenant could never approve anything, and the
+        # operator dashboard would show zero pending reviews while work piled up.
+        "installation_id": job.installation_id,
+    }
+
+
 def make_graph_handler(graph, reader, github=None, session_factory=None, rag=None):
     """Build the job handler that drives the LangGraph pipeline.
 
@@ -145,12 +167,7 @@ def make_graph_handler(graph, reader, github=None, session_factory=None, rag=Non
         #    file a patch targets and which check to re-run. A read failure raises
         #    -> the message stays unacked and is redelivered (see _handle_message).
         changed_files = reader.list_pull_files(job.repo, job.pr_number)
-        state: dict = {
-            "repo": job.repo,
-            "pr_number": job.pr_number,
-            "commit_sha": job.commit_sha,
-            "changed_files": changed_files,
-        }
+        state: dict = job_state(job, changed_files)
 
         is_ci = job.event in _CI_EVENTS
         if is_ci:

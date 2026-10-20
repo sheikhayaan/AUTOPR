@@ -25,8 +25,10 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
+from app.commands import handle_issue_comment
 from app.config import settings
 from app.db import SessionLocal, assert_schema_ready, engine
+from app.github_app import get_app_auth
 from app.ingest import ingest, parse_event, repo_is_allowed
 from app.models import DecisionStatus, JobStatus, PRJob, ReviewDecision
 from app.observability import (
@@ -50,6 +52,7 @@ from app.routing import store
 from app.routing.github import get_github_client
 from app.routing.router import execute_decision
 from app.security import verify_bearer_token, verify_signature
+from app.tenancy import apply_event, apply_repositories_event, get_active, upsert
 
 # Configure structured logging once, at import, before the app serves anything —
 # so even lifespan/startup events are emitted in the configured format (JSON in
@@ -361,9 +364,48 @@ async def webhook(
         response.status_code = 400
         return {"detail": "invalid json"}
 
+    # --- Tenancy events (Phase 16) -------------------------------------------
+    # Install / uninstall / suspend arrive as their own events and maintain the
+    # tenant table. They carry no work, so they are acknowledged immediately.
+    if x_github_event == "installation":
+        status = apply_event(db, str(payload.get("action") or ""), payload)
+        return {"status": "ok", "tenancy": status}
+    if x_github_event == "installation_repositories":
+        status = apply_repositories_event(db, str(payload.get("action") or ""), payload)
+        return {"status": "ok", "tenancy": status}
+
+    # --- Approval from the PR thread -----------------------------------------
+    # The only approval channel a tenant has: a maintainer comments
+    # `/autopr approve <id>`. Authority is verified against GitHub's own
+    # collaborator permissions, so there is no account for us to issue.
+    if x_github_event == "issue_comment":
+        outcome = handle_issue_comment(db=db, payload=payload, auth=get_app_auth())
+        log.info(
+            "webhook.issue_comment",
+            repo=(payload.get("repository") or {}).get("full_name"),
+            **outcome,
+        )
+        return outcome
+
     pr = parse_event(x_github_event or "pull_request", payload)
     if pr is None:
         return {"status": "ignored", "event": x_github_event}
+
+    # Enrol the tenant from the delivery itself, then refuse work for one that
+    # has suspended or uninstalled. Deliberately *not* a precondition:
+    # registration must never depend on the `installation` event arriving first,
+    # or a webhook outage during install would leave a paying tenant dead.
+    if pr.installation_id is not None and settings.multi_tenant_enabled:
+        upsert(db, payload.get("installation") or {})
+        if get_active(db, pr.installation_id) is None:
+            log.warning(
+                "webhook.installation_inactive",
+                installation_id=pr.installation_id,
+                repo=pr.repo,
+                pr=pr.pr_number,
+                correlation_id=current_correlation_id(),
+            )
+            return {"status": "ignored", "reason": "installation_inactive"}
 
     # A signed delivery from a repo we were not asked to serve still costs four
     # LLM calls. Refuse it before the INSERT so no row, no stream message and no
@@ -383,7 +425,7 @@ async def webhook(
     # A repeat delivery of work we already hold costs nothing, so it is checked
     # for duplicates first and never refused by a quota.
     if not dedup_exists(db, pr.dedup_key):
-        reason = quota_reason(db, pr.repo)
+        reason = quota_reason(db, pr.repo, pr.installation_id)
         if reason is not None:
             log.warning(
                 "webhook.quota_exceeded",
@@ -642,6 +684,53 @@ def _count_by_status(db: Session, column) -> dict[str, int]:
     return out
 
 
+@app.get("/installations", dependencies=[Depends(require_api_token_for_reads)])
+def list_installations(db: Session = Depends(get_db)) -> dict:
+    """The tenants this instance serves.
+
+    Deliberately boring: an operator needs to answer "who is on here, and is any
+    of them suspended or gone?" without opening Postgres. Counts are included
+    because the next question is always "who is using the budget?".
+    """
+    from app.models import Installation
+
+    rows = list(db.execute(select(Installation).order_by(Installation.created_at.asc())).scalars())
+    tenants = []
+    for row in rows:
+        jobs = db.execute(
+            select(func.count())
+            .select_from(PRJob)
+            .where(PRJob.installation_id == row.installation_id)
+        ).scalar_one()
+        pending = db.execute(
+            select(func.count())
+            .select_from(ReviewDecision)
+            .where(
+                ReviewDecision.installation_id == row.installation_id,
+                ReviewDecision.status == DecisionStatus.PENDING,
+            )
+        ).scalar_one()
+        tenants.append(
+            {
+                "installation_id": row.installation_id,
+                "account": row.account_login,
+                "account_type": row.account_type,
+                "active": row.is_active,
+                "suspended": row.suspended_at is not None,
+                "deleted": row.deleted_at is not None,
+                "jobs": jobs,
+                "pending_reviews": pending,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+        )
+    return {
+        "count": len(tenants),
+        "multi_tenant": settings.multi_tenant_enabled,
+        "install_url": settings.install_url,
+        "installations": tenants,
+    }
+
+
 @app.get("/stats", dependencies=[Depends(require_api_token_for_reads)])
 def stats(db: Session = Depends(get_db)) -> dict:
     """Aggregate KPIs for the dashboard header — counts by status + config."""
@@ -671,6 +760,9 @@ def stats(db: Session = Depends(get_db)) -> dict:
             "github_web_url": settings.github_web_url,
             "handoff_mode": settings.handoff_mode,
             "public_mode": settings.public_mode,
+            "multi_tenant": settings.multi_tenant_enabled,
+            "install_url": settings.install_url,
+            "comment_commands": settings.github_comment_commands,
         },
     }
 

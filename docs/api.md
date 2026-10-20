@@ -134,6 +134,47 @@ not found · `403` on a public instance, same as approve.
 
 ---
 
+### `GET /installations`
+
+The tenants this instance serves (multi-tenant mode). Requires the operator token when
+`AUTOPR_REQUIRE_AUTH_FOR_READS` is on.
+
+```json
+{
+  "count": 1,
+  "multi_tenant": true,
+  "install_url": "https://github.com/apps/your-slug/installations/new",
+  "installations": [
+    {
+      "installation_id": 123456,
+      "account": "acme",
+      "account_type": "Organization",
+      "active": true,
+      "suspended": false,
+      "deleted": false,
+      "jobs": 42,
+      "pending_reviews": 3,
+      "created_at": "2026-10-19T18:00:00+00:00"
+    }
+  ]
+}
+```
+
+### `POST /webhook` — `issue_comment`
+
+Not called by hand; this is the tenant's approval channel. A comment whose **first content
+line** is `/autopr approve <id>`, `/autopr reject <id>`, `/autopr status` or `/autopr` (help)
+is acted on only if GitHub reports `admin`, `maintain` or `write` for the commenter. Responses:
+
+| Situation | Answer |
+|---|---|
+| executed | `{"status": "executed", "decision_id": 42, "url": …}` |
+| rejected | `{"status": "rejected", "decision_id": 42}` |
+| not allowed | `{"status": "ignored", "reason": "insufficient_permission"}` — **no** reply in the thread |
+| not this tenant's / not this repo's | `{"status": "replied"}` + "no such decision" comment |
+| installation suspended/deleted | `{"status": "ignored", "reason": "installation_inactive"}` |
+| comment commands disabled | `{"status": "ignored", "reason": "comment_commands_disabled"}` |
+
 ## Dashboard reads
 
 ### `GET /stats`

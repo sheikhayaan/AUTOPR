@@ -26,6 +26,29 @@ from app.routing.policy import RoutingDecision
 log = structlog.get_logger()
 
 
+def _installation_id_from(state: dict) -> int | None:
+    """Read the tenant id out of graph state, tolerating junk.
+
+    This value becomes the authorization boundary for who may approve the row,
+    so a malformed one must degrade to NULL ("no tenant") rather than raise
+    inside the router or, worse, coerce something truthy out of a string like
+    "None". `bool` is rejected explicitly because `isinstance(True, int)` is
+    true in Python and would enrol a decision to tenant 1.
+    """
+    raw = state.get("installation_id")
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    if isinstance(raw, str):
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return None
+        return value if value > 0 else None
+    return None
+
+
 def enqueue(session: Session, decision: RoutingDecision, state: dict) -> ReviewDecision:
     """Persist a pending decision idempotently; return the stored row.
 
@@ -60,6 +83,11 @@ def enqueue_tracked(
         repo=state.get("repo", "?"),
         pr_number=int(state.get("pr_number", 0)),
         commit_sha=state.get("commit_sha", "?"),
+        # Tenancy is part of the row, not a lookup performed later: it is what
+        # decides who may approve this action. NULL is a real value meaning
+        # "single-operator install", so it must be written explicitly rather
+        # than left to a default that no tenant can ever address.
+        installation_id=_installation_id_from(state),
         action=decision.action.value,
         risk=decision.risk,
         reason=decision.reason,

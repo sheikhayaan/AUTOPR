@@ -84,9 +84,13 @@ class HttpGitHubClient:
     to do with a failed action (we mark the decision as failed, not executed).
     """
 
-    def __init__(self, token: str, api_url: str | None = None) -> None:
+    def __init__(self, token: str, api_url: str | None = None, transport=None) -> None:
         self.token = token
         self.api_url = (api_url or settings.github_api_url).rstrip("/")
+        # Injectable transport: lets tests exercise the real client (headers, JSON,
+        # status handling) without opening a socket — and without a test ever
+        # being able to reach a live repository by accident.
+        self._transport = transport
 
     def _headers(self) -> dict:
         return {
@@ -100,7 +104,8 @@ class HttpGitHubClient:
 
         url = f"{self.api_url}{path}"
         try:
-            resp = httpx.post(url, headers=self._headers(), json=json_body, timeout=15.0)
+            with httpx.Client(transport=self._transport, timeout=15.0) as client:
+                resp = client.post(url, headers=self._headers(), json=json_body)
         except httpx.HTTPError as exc:
             log.error("github.http_error", kind=kind, error=repr(exc))
             return ActionResult(ok=False, kind=kind, detail=repr(exc))
@@ -130,6 +135,16 @@ def get_github_client() -> GitHubClient:
     if settings.handoff_mode:
         log.info("github.client", mode="handoff_readonly")
         return FakeGitHubClient()
+    if settings.multi_tenant_enabled and not settings.github_dry_run:
+        # Multi-tenant: no instance-wide repository token exists. Every write
+        # resolves the owning installation's token from the repo name, so this
+        # process cannot write on behalf of a tenant that did not install us.
+        from app.github_app import TenantGitHubClient, get_app_auth
+
+        auth = get_app_auth()
+        if auth is not None:
+            log.info("github.client", mode="github_app", api=settings.github_api_url)
+            return TenantGitHubClient(auth)
     if settings.github_token and not settings.github_dry_run:
         log.info("github.client", mode="http", api=settings.github_api_url)
         return HttpGitHubClient(settings.github_token, settings.github_api_url)

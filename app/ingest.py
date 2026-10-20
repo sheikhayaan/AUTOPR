@@ -48,6 +48,11 @@ class PRPayload:
     commit_sha: str
     author: str
     event: str = "pull_request"
+    # Tenant owner (GitHub App installation). None = single-operator instance.
+    # Excluded from dedup_key on purpose: identity of the *work* is repo|pr|sha,
+    # and an installation cannot change for a given repo without an uninstall,
+    # which cancels the work anyway.
+    installation_id: int | None = None
     # CI-fix track only: inline failure evidence pulled from the webhook payload
     # (check_run.output / workflow_run fields). Deliberately excluded from
     # dedup_key — logs are context, not identity; two deliveries of the same
@@ -88,6 +93,7 @@ def parse_pull_request_event(event: str, payload: dict) -> PRPayload | None:
         commit_sha=str(head["sha"]),
         author=str(author),
         event=event,
+        installation_id=installation_id_from(payload),
     )
 
 
@@ -194,7 +200,23 @@ def parse_ci_event(event: str, payload: dict) -> PRPayload | None:
         author=str(author),
         event=event,
         ci_logs=logs,
+        installation_id=installation_id_from(payload),
     )
+
+
+def installation_id_from(payload: dict) -> int | None:
+    """The delivering installation, if the payload names one.
+
+    Present on every delivery to a GitHub App. Absent on classic webhook
+    deliveries to a single operator's repo, which is why every consumer treats
+    None as "operator work" rather than an error.
+    """
+    inst = payload.get("installation") or {}
+    raw = inst.get("id")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def repo_is_allowed(repo: str) -> bool:
@@ -273,6 +295,7 @@ def ingest(session: Session, queue: JobQueue, payload: PRPayload) -> IngestResul
             "author": payload.author,
             "event": payload.event,
             "event_context": payload.ci_logs or None,
+            "installation_id": payload.installation_id,
             "status": JobStatus.PENDING.value,
             "attempts": 0,
         },

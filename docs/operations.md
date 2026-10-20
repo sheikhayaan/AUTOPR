@@ -236,7 +236,94 @@ the quotas key on the only identities that exist — the repo and the instance.
 
 ---
 
-## 10. Going live on GitHub (leaving dry-run)
+## 10. Multi-tenant: serving strangers as a GitHub App
+
+Single-operator mode has one credential. Multi-tenant mode has one *per customer*, minted on
+demand, and that is what makes the difference between a bot you run and a bot people install.
+
+### 10.1 Register the App (once, ~10 minutes)
+
+| Field | Value |
+|---|---|
+| Webhook URL | `https://your-host/webhook` |
+| Webhook secret | the same `AUTOPR_WEBHOOK_SECRET` |
+| Permissions | Contents **read**, Pull requests **write**, Issues **write**, Checks **read** |
+| Events | `pull_request`, `check_run`, `workflow_run`, `issue_comment`, `installation`, `installation_repositories` |
+| Where can it be installed | any account |
+
+Download the private key once (GitHub never shows it again) and set:
+
+```bash
+AUTOPR_GITHUB_APP_ID=123456
+AUTOPR_GITHUB_APP_PRIVATE_KEY="$(cat your-app.private-key.pem)"   # or one line with 
+
+AUTOPR_GITHUB_APP_SLUG=your-app-slug
+AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY=50
+```
+
+Then `GET /installations` should answer with `multi_tenant: true` and an `install_url`. The
+worker needs these variables too — it is the process that posts comments.
+
+### 10.2 What changes at runtime
+
+| Before | After |
+|---|---|
+| one `AUTOPR_GITHUB_TOKEN` writes everywhere it can reach | no instance-wide repo credential; each write uses the owning installation's token |
+| approval via the ops API with a bearer token | approval via `/autopr approve <id>` in the PR thread; ops API still works for the operator |
+| `AUTOPR_ALLOWED_REPOS` decides which repos may create work | the installation decides; the allowlist remains available as an extra filter |
+| one global budget | per-repo/hour, per-tenant/day, per-instance/day |
+
+### 10.3 Isolation, precisely
+
+- A decision is addressable only by the installation that created it **and** in the repo it
+  belongs to. Ids are global; authority is not.
+- A tenant that uninstalls or is suspended stops immediately: `suspend` pauses (reversible),
+  `deleted` is terminal and cannot be revived by a replayed `created` event.
+- If the App is not installed on a repo, the write is *refused*. There is no PAT fallback in App
+  mode, by design: a fallback would be an instance-wide credential one bug away from use.
+
+### 10.4 What the tenant sees
+
+1. A low-risk review is posted automatically (dry-run permitting).
+2. Anything code-changing, or above the risk ceiling, is **queued** — and the bot posts a notice
+   on the PR with the decision id and the command to approve it. Without that notice a tenant
+   could not discover the id, since they have no dashboard.
+3. Nothing else appears until a maintainer acts. Silence is not a bug.
+
+### 10.5 Comment commands
+
+```
+/autopr status           → what is waiting on this repo
+/autopr approve <id>     → execute a queued action
+/autopr reject <id>      → decline it (no GitHub write)
+/autopr                  → help
+```
+
+Authority is `admin`/`maintain`/`write` as reported by
+`GET /repos/{repo}/collaborators/{login}/permission` at the moment of the command. Nobody
+else gets a reply, not even "no" — replying would let anyone enumerate decision ids.
+
+### 10.6 Uninstalling
+
+GitHub sends `installation: deleted`; the tenant row keeps its history but can no longer mint
+tokens or have work processed. To remove a tenant's data as well:
+
+```sql
+DELETE FROM review_decisions WHERE installation_id = :id;
+DELETE FROM job_results      WHERE job_id IN (SELECT id FROM pr_jobs WHERE installation_id = :id);
+DELETE FROM pr_jobs          WHERE installation_id = :id;
+DELETE FROM installations    WHERE installation_id = :id;
+```
+
+Order matters: children first. Do this deliberately — it is a GDPR-shaped action, not cleanup.
+
+### 10.7 Rotating the App private key
+
+Generate a new key in the App settings, deploy it, then delete the old one. Installation tokens
+already minted stay valid for up to an hour; the App JWT is re-signed per burst, so a restart is
+enough (`reset_app_auth()` is only needed in tests).
+
+## 11. Going live on GitHub (leaving dry-run)
 
 Dry-run is the default and the safe state. To let approvals post for real:
 
