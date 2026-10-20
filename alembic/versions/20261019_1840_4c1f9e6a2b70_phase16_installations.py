@@ -47,9 +47,7 @@ def upgrade() -> None:
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
-        sa.UniqueConstraint(
-            "installation_id", name="uq_installations_installation_id"
-        ),
+        sa.UniqueConstraint("installation_id", name="uq_installations_installation_id"),
     )
     op.create_index(
         "ix_installations_installation_id",
@@ -60,9 +58,7 @@ def upgrade() -> None:
 
     for table in ("pr_jobs", "review_decisions"):
         op.add_column(table, sa.Column("installation_id", sa.Integer(), nullable=True))
-        op.create_index(
-            f"ix_{table}_installation_id", table, ["installation_id"], unique=False
-        )
+        op.create_index(f"ix_{table}_installation_id", table, ["installation_id"], unique=False)
 
 
 def downgrade() -> None:

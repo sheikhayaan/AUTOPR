@@ -53,6 +53,16 @@ def _readme() -> str:
     return README.read_text(encoding="utf-8")
 
 
+def _pages() -> list[Path]:
+    """Every page a reader can land on: the README plus everything in docs/.
+
+    Guards run over all of them. A new document is the most likely place for
+    unguarded markdown to appear, so it joins the guard by existing rather than
+    by being remembered.
+    """
+    return [README, *sorted((ROOT / "docs").glob("*.md"))]
+
+
 _GENERATOR: object | None = None
 
 
@@ -206,22 +216,37 @@ def test_code_fences_are_balanced():
 
 def test_every_mermaid_block_is_a_supported_diagram():
     """Catch a block whose first token no renderer understands."""
-    blocks = _fenced(_readme(), "mermaid")
-    assert len(blocks) >= 6, "expected the README's diagrams to still be there"
-    for body in blocks:
-        head = body.strip().split()[0] if body.strip() else ""
-        assert head in MERMAID_KINDS, f"unknown Mermaid diagram type {head!r}"
+    assert len(_fenced(_readme(), "mermaid")) >= 6, "README diagrams went missing"
+    for page in _pages():
+        for body in _fenced(page.read_text(encoding="utf-8"), "mermaid"):
+            head = body.strip().split()[0] if body.strip() else ""
+            assert head in MERMAID_KINDS, (
+                f"{page.relative_to(ROOT)}: unknown Mermaid diagram type {head!r}"
+            )
 
 
 def test_mermaid_subgraphs_are_balanced():
     """`subgraph` without its `end` silently truncates a flowchart."""
-    for body in _fenced(_readme(), "mermaid"):
-        opens = len(re.findall(r"^\s*subgraph\b", body, re.M))
-        closes = len(re.findall(r"^\s*end\s*$", body, re.M))
-        # stateDiagram/erDiagram blocks also use `end` for notes; only compare
-        # on blocks that actually declare a subgraph.
-        if opens:
-            assert opens == closes, f"unbalanced subgraph/end: {opens} vs {closes}"
+    for page in _pages():
+        for body in _fenced(page.read_text(encoding="utf-8"), "mermaid"):
+            opens = len(re.findall(r"^\s*subgraph\b", body, re.M))
+            closes = len(re.findall(r"^\s*end\s*$", body, re.M))
+            # stateDiagram/erDiagram blocks also use `end` for notes; only
+            # compare on blocks that actually declare a subgraph.
+            if opens:
+                assert opens == closes, (
+                    f"{page.relative_to(ROOT)}: unbalanced subgraph/end: {opens} vs {closes}"
+                )
+
+
+def test_code_fences_are_balanced_everywhere():
+    """An odd fence count in any document swallows everything after it."""
+    odd = [
+        page.relative_to(ROOT).as_posix()
+        for page in _pages()
+        if page.read_text(encoding="utf-8").count("```") % 2
+    ]
+    assert not odd, f"unbalanced code fences: {odd}"
 
 
 def test_anchors_in_the_table_of_contents_resolve():

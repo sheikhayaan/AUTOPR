@@ -40,38 +40,38 @@
   <rect width="1200" height="620" fill="url(#bg)"/>
   <rect width="1200" height="620" fill="url(#grid)" opacity="0.55"/>
   <text x="60.0" y="54.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="26" font-weight="700" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Codebase composition</text>
-  <text x="60.0" y="78.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">19,300 lines across 117 source files, counted at generation time.</text>
+  <text x="60.0" y="78.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="start">19,321 lines across 117 source files, counted at generation time.</text>
   <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#111a26" stroke-width="34.0"/>
-  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#22d3ee" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="316.47 626.01" stroke-dashoffset="-0.00" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
-  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#a855f7" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="335.66 606.82" stroke-dashoffset="-324.01" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
-  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#10b981" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="197.80 744.67" stroke-dashoffset="-667.21" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
-  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#f59e0b" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="62.39 880.09" stroke-dashoffset="-872.55" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
-  <text x="330.0" y="346.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="40" font-weight="700" fill="#e8eefc" fill-opacity="1.0" text-anchor="middle">19,300</text>
+  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#22d3ee" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="316.12 626.36" stroke-dashoffset="-0.00" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
+  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#a855f7" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="336.51 605.97" stroke-dashoffset="-323.66" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
+  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#10b981" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="197.58 744.90" stroke-dashoffset="-667.70" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
+  <circle cx="330.0" cy="350.0" r="150.0" fill="none" stroke="#f59e0b" stroke-width="34.0" stroke-linecap="butt" stroke-dasharray="62.12 880.36" stroke-dashoffset="-872.82" transform="rotate(-90 330.0 350.0)" filter="url(#glow)" opacity="0.95"/>
+  <text x="330.0" y="346.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="40" font-weight="700" fill="#e8eefc" fill-opacity="1.0" text-anchor="middle">19,321</text>
   <text x="330.0" y="372.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="middle">lines</text>
   <text x="330.0" y="396.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4a5a72" fill-opacity="1.0" text-anchor="middle">excl. deps &amp; builds</text>
   <rect x="560.0" y="152.0" width="12.0" height="12.0" rx="3" fill="#22d3ee" fill-opacity="1.0" stroke="#22d3ee" stroke-width="1.2"/>
   <text x="584.0" y="165.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Backend (app/)</text>
   <text x="900.0" y="165.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" fill="#e8eefc" fill-opacity="1.0" text-anchor="end">6,635</text>
-  <text x="1060.0" y="165.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="end">34.4%</text>
+  <text x="1060.0" y="165.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="end">34.3%</text>
   <line x1="560" y1="180.0" x2="1080" y2="180.0" stroke="#141d2b" stroke-width="1"/>
-  <rect x="560.0" y="186.0" width="178.8" height="5.0" rx="2.5" fill="#22d3ee" fill-opacity="0.85" stroke="#22d3ee" stroke-width="1.2"/>
+  <rect x="560.0" y="186.0" width="178.6" height="5.0" rx="2.5" fill="#22d3ee" fill-opacity="0.85" stroke="#22d3ee" stroke-width="1.2"/>
   <rect x="560.0" y="236.0" width="12.0" height="12.0" rx="3" fill="#a855f7" fill-opacity="1.0" stroke="#a855f7" stroke-width="1.2"/>
   <text x="584.0" y="249.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Tests (tests/)</text>
-  <text x="900.0" y="249.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" fill="#e8eefc" fill-opacity="1.0" text-anchor="end">7,028</text>
-  <text x="1060.0" y="249.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="end">36.4%</text>
+  <text x="900.0" y="249.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" fill="#e8eefc" fill-opacity="1.0" text-anchor="end">7,053</text>
+  <text x="1060.0" y="249.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="end">36.5%</text>
   <line x1="560" y1="264.0" x2="1080" y2="264.0" stroke="#141d2b" stroke-width="1"/>
-  <rect x="560.0" y="270.0" width="189.4" height="5.0" rx="2.5" fill="#a855f7" fill-opacity="0.85" stroke="#a855f7" stroke-width="1.2"/>
+  <rect x="560.0" y="270.0" width="189.8" height="5.0" rx="2.5" fill="#a855f7" fill-opacity="0.85" stroke="#a855f7" stroke-width="1.2"/>
   <rect x="560.0" y="320.0" width="12.0" height="12.0" rx="3" fill="#10b981" fill-opacity="1.0" stroke="#10b981" stroke-width="1.2"/>
   <text x="584.0" y="333.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Dashboard (frontend/src)</text>
   <text x="900.0" y="333.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" fill="#e8eefc" fill-opacity="1.0" text-anchor="end">4,205</text>
   <text x="1060.0" y="333.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="end">21.8%</text>
   <line x1="560" y1="348.0" x2="1080" y2="348.0" stroke="#141d2b" stroke-width="1"/>
-  <rect x="560.0" y="354.0" width="113.3" height="5.0" rx="2.5" fill="#10b981" fill-opacity="0.85" stroke="#10b981" stroke-width="1.2"/>
+  <rect x="560.0" y="354.0" width="113.2" height="5.0" rx="2.5" fill="#10b981" fill-opacity="0.85" stroke="#10b981" stroke-width="1.2"/>
   <rect x="560.0" y="404.0" width="12.0" height="12.0" rx="3" fill="#f59e0b" fill-opacity="1.0" stroke="#f59e0b" stroke-width="1.2"/>
   <text x="584.0" y="417.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8eefc" fill-opacity="1.0" text-anchor="start">Tooling (scripts/, alembic/)</text>
-  <text x="900.0" y="417.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" fill="#e8eefc" fill-opacity="1.0" text-anchor="end">1,432</text>
+  <text x="900.0" y="417.0" font-family="'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" fill="#e8eefc" fill-opacity="1.0" text-anchor="end">1,428</text>
   <text x="1060.0" y="417.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#8b9bb4" fill-opacity="1.0" text-anchor="end">7.4%</text>
   <line x1="560" y1="432.0" x2="1080" y2="432.0" stroke="#141d2b" stroke-width="1"/>
-  <rect x="560.0" y="438.0" width="38.6" height="5.0" rx="2.5" fill="#f59e0b" fill-opacity="0.85" stroke="#f59e0b" stroke-width="1.2"/>
+  <rect x="560.0" y="438.0" width="38.4" height="5.0" rx="2.5" fill="#f59e0b" fill-opacity="0.85" stroke="#f59e0b" stroke-width="1.2"/>
   <text x="60.0" y="580.0" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#4a5a72" fill-opacity="1.0" text-anchor="start">Backend is the bulk, but tests are 31% of the tree — the ratio a safety-critical service should have.</text>
 </svg>

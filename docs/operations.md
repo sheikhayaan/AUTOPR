@@ -247,7 +247,7 @@ demand, and that is what makes the difference between a bot you run and a bot pe
 |---|---|
 | Webhook URL | `https://your-host/webhook` |
 | Webhook secret | the same `AUTOPR_WEBHOOK_SECRET` |
-| Permissions | Contents **read**, Pull requests **write**, Issues **write**, Checks **read** |
+| Permissions | Contents **read**, Pull requests **read**, Issues **write** (no Checks access: CI logs arrive inline in the webhook) |
 | Events | `pull_request`, `check_run`, `workflow_run`, `issue_comment`, `installation`, `installation_repositories` |
 | Where can it be installed | any account |
 

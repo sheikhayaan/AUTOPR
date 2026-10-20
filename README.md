@@ -44,7 +44,7 @@
 | 6 | [Core pipeline](#core-pipeline) | Job and decision state machines + per-stage guards |
 | 7 | [Data model](#data-model) | `erDiagram`, PK/FK, and where vectors vs rows live |
 | 8 | [Measured performance](#measured-performance) | 1,008 timed HTTP calls + 270 policy calls, ingestion breakdown, cold-start warning |
-| 9 | [Codebase composition](#codebase-composition) | 19,300 lines, counted at generation time |
+| 9 | [Codebase composition](#codebase-composition) | 19,321 lines, counted at generation time |
 | 10 | [Repository map](#repository-map) | The 15 files that carry the design |
 | 11 | [Quickstart](#quickstart) | Local two-terminal, Docker, and a 60-second smoke test |
 | 12 | [Configuration](#configuration) | All 42 settings with real defaults |
@@ -466,16 +466,16 @@ python scripts/bench_api.py --scale 3       # 3x samples for a tighter p99
 ## Codebase composition
 
 <div align="center">
-<img src="./docs/assets/donut.svg" alt="Composition of 19,300 lines across 117 files" width="100%">
+<img src="./docs/assets/donut.svg" alt="Composition of 19,321 lines across 117 files" width="100%">
 </div>
 
 | Area | Lines | Files | Share |
 |---|---:|---:|---:|
-| Backend (`app/`) | 6,635 | 34 | 34.4% |
-| Tests (`tests/`) | 7,028 | 39 | 36.4% |
+| Backend (`app/`) | 6,635 | 34 | 34.3% |
+| Tests (`tests/`) | 7,053 | 39 | 36.5% |
 | Dashboard (`frontend/src`) | 4,205 | 37 | 21.8% |
-| Tooling (`scripts/`, `alembic/`) | 1,432 | 7 | 7.4% |
-| **Total** | **19,300** | **117** | **100%** |
+| Tooling (`scripts/`, `alembic/`) | 1,428 | 7 | 7.4% |
+| **Total** | **19,321** | **117** | **100%** |
 
 Counted by `docs/assets/generate.py::line_counts()` on every run — the donut cannot drift
 from the tree. Tests are 35% of the codebase, which is the ratio a service whose failure
@@ -493,7 +493,7 @@ mode is "writes to your repository" should have.
 <summary><b>Plain tree with line counts</b></summary>
 
 ```text
-AUTOPR/                                    19,300 lines · 117 files
+AUTOPR/                                    19,321 lines · 117 files
 ├── app/                                    5,067
 │   ├── main.py                               733   webhook + ops API + reads
 │   ├── worker.py                             413   consume · reclaim · reconcile
@@ -521,7 +521,7 @@ AUTOPR/                                    19,300 lines · 117 files
 │   │   ├── state.py                           64   the typed graph state
 │   │   └── llm.py                             41   Groq client factory
 │   └── sandbox/{runner,verifier,policy}.py    450   container flags and caps
-├── tests/                                  7,028  403 tests in 39 files
+├── tests/                                   7,053  409 tests in 39 files
 ├── frontend/src/                           4,141   9 test files, 4 routes, typed client
 ├── docs/                                           architecture · operations · api · 14 ADRs
 ├── docs/assets/                                    generate.py + 6 SVGs + bench_result.json
@@ -606,13 +606,17 @@ an operator.
 
 **Setup (operator, once).** Register a GitHub App → point its webhook at
 `https://your-host/webhook` with the same `AUTOPR_WEBHOOK_SECRET`, grant *Contents: read*,
-*Pull requests: write*, *Issues: write*, *Checks: read* → subscribe to `pull_request`,
+*Pull requests: read*, *Issues: write* → subscribe to `pull_request`,
 `check_run`, `workflow_run`, `issue_comment`, `installation`, `installation_repositories` → put
 the App id and the downloaded `.pem` into `AUTOPR_GITHUB_APP_ID` and
-`AUTOPR_GITHUB_APP_PRIVATE_KEY` (single-line with `
-` is fine) → set
+`AUTOPR_GITHUB_APP_PRIVATE_KEY` (one line, escaped newlines accepted) → set
 `AUTOPR_QUOTA_JOBS_PER_INSTALLATION_PER_DAY`. That's it: `AUTOPR_GITHUB_APP_SLUG` publishes the
 install link at `GET /installations` and `GET /stats`.
+
+Those three permissions are the whole list, and they are derived from the API calls rather than
+guessed: `pulls/{n}/files` (read the diff), `tarball/{ref}` (snapshot for the sandbox), and
+`issues/{n}/comments` (the one write). **No `Checks` access** — CI failure logs arrive inline in
+the webhook payload, so the API is never asked for them. Full walkthrough: **[docs/install.md](docs/install.md)**.
 
 **Then a customer's whole experience is this:**
 
